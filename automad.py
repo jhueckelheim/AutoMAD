@@ -4,17 +4,17 @@ class Fwd2Rev(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput):
-            if(isinstance(fwdinput, list)):
-                fwdinput, input_d = fwdinput
+            input_p = fwdinput[:,0,...].unsqueeze(1)
+            input_d = fwdinput[:,1:,...]
             ctx.save_for_backward(input_d)
-            return fwdinput
+            return input_p
 
         @staticmethod
         def backward(ctx, grad_output):
-            print("IEUWBHFILUWEBPIUGB")
             input_d, = ctx.saved_tensors
             grad_input = input_d*grad_output
-            return grad_input
+            pad = torch.zeros(grad_input[:,0,...].unsqueeze(1).size())
+            return torch.cat([pad,grad_input],1)
 
     def __init__(self):
         super(Fwd2Rev, self).__init__()
@@ -47,16 +47,14 @@ class Conv2d(torch.nn.Module):
                 if bias is not None and ctx.needs_input_grad[2]:
                   bias_d[-1] = 1
                 ret_d = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d)
-            return [ret, ret_d]
+            return torch.cat([ret, ret_d], 1)
 
         @staticmethod
         def backward(ctx, grad_output):
-            print("IEUWBHFILUWEBPIUGB")
+            grad_output = grad_output[:,1:,...]
             grad_input = None
             grad_weight = grad_output[:,0:9,:,:].sum(dim=[0,2,3]).reshape(1,1,3,3) if ctx.needs_input_grad[1] else None
-            grad_bias = grad_output[:,-1,:,:].sum(dim=[0]) if bias is not None and ctx.needs_input_grad[2] else None
-            print(grad_weight)
-            print(grad_bias)
+            grad_bias = grad_output[:,-1,:,:].sum(dim=[0]) if ctx.needs_input_grad[2] else None
             return grad_input, grad_weight, grad_bias
 
     def __init__(self, in_channels, out_channels, kernel_size, bias = True):
