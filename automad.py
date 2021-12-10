@@ -1,11 +1,20 @@
 import torch
 
+class DualTensor(torch.Tensor):
+    @staticmethod
+    def __new__(cls, xd, x, *args, **kwargs):
+        return super().__new__(cls, xd, *args, **kwargs)
+    
+    def __init__(self, xd, x):
+        super().__init__()
+        self.x = x
+
 class Fwd2Rev(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput):
-            input_p = fwdinput[:,0,...].unsqueeze(1)
-            input_d = fwdinput[:,1:,...]
+            input_p = torch.Tensor(fwdinput.x)
+            input_d = torch.Tensor(fwdinput)
             ctx.save_for_backward(input_d)
             return input_p
 
@@ -13,8 +22,7 @@ class Fwd2Rev(torch.nn.Module):
         def backward(ctx, grad_output):
             input_d, = ctx.saved_tensors
             grad_input = input_d*grad_output
-            pad = torch.zeros(grad_input[:,0,...].unsqueeze(1).size())
-            return torch.cat([pad,grad_input],1)
+            return grad_input
 
     def __init__(self):
         super(Fwd2Rev, self).__init__()
@@ -47,11 +55,12 @@ class Conv2d(torch.nn.Module):
                 if bias is not None and ctx.needs_input_grad[2]:
                   bias_d[-1] = 1
                 ret_d = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d)
-            return torch.cat([ret, ret_d], 1)
+            ret.requires_grad = True
+            ret_dual = DualTensor(ret_d, ret)
+            return ret_dual
 
         @staticmethod
         def backward(ctx, grad_output):
-            grad_output = grad_output[:,1:,...]
             grad_input = None
             grad_weight = grad_output[:,0:9,:,:].sum(dim=[0,2,3]).reshape(1,1,3,3) if ctx.needs_input_grad[1] else None
             grad_bias = grad_output[:,-1,:,:].sum(dim=[0]) if ctx.needs_input_grad[2] else None
