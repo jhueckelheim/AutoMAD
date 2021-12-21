@@ -1,6 +1,11 @@
 import torch
 
 class DualTensor(torch.Tensor):
+    '''
+    DualTensor objects store a primal tensor and its corresponding derivative
+    tensor. They otherwise inherit all functionality from torch.Tensor,
+    including size and requires_grad attributes.
+    '''
     @staticmethod
     def __new__(cls, xd, x, *args, **kwargs):
         return super().__new__(cls, xd, *args, **kwargs)
@@ -10,6 +15,13 @@ class DualTensor(torch.Tensor):
         self.x = x
 
 class Fwd2Rev(torch.nn.Module):
+    '''
+    A neural network layer whose only purpose is to glue a forward-mode AD and
+    reverse-mode AD together. It will store forward-propagated derivatives
+    during the forward sweep, and combine them with the reverse-propagated
+    derivatives during the reverse sweep, immediately resulting in the gradient
+    tensors for all preceding forward layers.
+    '''
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput):
@@ -70,6 +82,8 @@ class Conv2d(torch.nn.Module):
         super(Conv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        # TODO we create a Conv2d layer here simply to piggy-back on its default initialization for weight and bias.
+        # We should just find out whatever the correct default initialization is, and use that.
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, bias)
         self.weight = self.conv.weight
         self.bias = self.conv.bias
