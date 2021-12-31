@@ -73,11 +73,11 @@ class Conv2d(torch.nn.Module):
                 if(isinstance(fwdinput_dual, DualTensor)):
                     fwdinput = fwdinput_dual.x
                     fwdinput_d = fwdinput_dual.xd
-                    num_dervs = fwdinput_dual.size(0)
+                    num_dervs_incoming = fwdinput_dual.size(0)
                 else:
                     fwdinput = fwdinput_dual
                     fwdinput_d = None
-                    num_dervs = 0
+                    num_dervs_incoming = 0
                 n_batches = fwdinput.size(0)
                 if ctx.needs_input_grad[0]:
                     fwdinput_pd = torch.cat([fwdinput, fwdinput_d], dim=0)
@@ -88,15 +88,17 @@ class Conv2d(torch.nn.Module):
                 ret_p = ret[0:n_batches,:,:,:]
                 ret_d1 = ret[n_batches:,:,:,:]
                 # Derivative Propagation
-                n_directions = 0
+                ctx.num_dervs = 0
                 if ctx.needs_input_grad[1]:
-                    n_directions += 9
+                    ctx.weight_numel = weight.numel()
+                    ctx.num_dervs += ctx.weight_numel
+                    ctx.weight_size = weight.size()
                 if bias is not None and ctx.needs_input_grad[2]:
-                    n_directions += 1
-                bias_d = torch.nn.Parameter(torch.zeros(n_directions), requires_grad=False)
-                weight_d = torch.nn.Parameter(torch.zeros(n_directions, 1, 3, 3), requires_grad=False)
+                    ctx.num_dervs += 1
+                bias_d = torch.nn.Parameter(torch.zeros(ctx.num_dervs), requires_grad=False)
+                weight_d = torch.nn.Parameter(torch.zeros(ctx.num_dervs*ctx.weight_size[0], ctx.weight_size[1], ctx.weight_size[2], ctx.weight_size[3]), requires_grad=False)
                 if ctx.needs_input_grad[1]:
-                  weight_d[0:9,:,:,:].view(9*9)[0::10] = 1
+                  weight_d[0:ctx.weight_numel,:,:,:].view(ctx.weight_numel**2)[0::ctx.weight_numel+1] = 1
                 if bias is not None and ctx.needs_input_grad[2]:
                   bias_d[-1] = 1
                 #ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
@@ -105,7 +107,7 @@ class Conv2d(torch.nn.Module):
                     ret_d = torch.cat([truebatch2outer(ret_d1, n_batches), truebatch2outer(ret_d2, n_batches)], dim=1)
                 else:
                     ret_d = ret_d2
-            ret_dual = DualTensor(torch.zeros(10+num_dervs), ret_p, ret_d)
+            ret_dual = DualTensor(torch.zeros(ctx.num_dervs+num_dervs_incoming), ret_p, ret_d)
             return ret_dual
 
         @staticmethod
@@ -114,14 +116,19 @@ class Conv2d(torch.nn.Module):
             # that happened before us in the forward pass (and will happen after
             # this in the reverse pass).
             # The gradient tensor is organized such that the last directional
-            # derivatives belong to the current layer. This layer has 10
-            # trainable parameters, so everything except the last 10 directions
-            # is passed into grad_input.
-            grad_input = grad_output[:-10]
+            # derivatives belong to the current layer. Everything except those
+            # last directions is passed into grad_input.
+            grad_input = grad_output[:-ctx.num_dervs]
             # the rest is gradient info for the current layer. The weights are
             # first, the bias is last.
-            grad_weight = grad_output[-10:-1].view(1,1,3,3)
-            grad_bias = grad_output[-1].view(1)
+            if(ctx.needs_input_grad[1]):
+                grad_weight = grad_output[-ctx.num_dervs:-ctx.num_dervs+ctx.weight_numel].view(ctx.weight_size)
+            else:
+                grad_weight = None
+            if(ctx.needs_input_grad[2]):
+                grad_bias = grad_output[-1].view(1)
+            else:
+                grad_bias = None
             return grad_input, grad_weight, grad_bias
 
     def __init__(self, in_channels, out_channels, kernel_size, bias = True):
