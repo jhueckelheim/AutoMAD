@@ -2,7 +2,12 @@ import torch
 
 def channel2batch(x):
     # reinterpret a [x,y,:,:] tensor as a [x*y,1,:,:] tensor
-    return x.view(x.size(1)*x.size(0),1,x.size(2),x.size(3))
+    return x.view(x.size(1)*x.size(0), 1, x.size(2), x.size(3))
+
+def truebatch2outer(x, n_batches):
+    # reinterpret a [x*n_batches,:,:,:] tensor as a [n_batches,x,:,:,:] tensor
+    print(f"2outer: {x.size()}")
+    return x.view(n_batches, x.size(0)//n_batches, x.size(1), x.size(2), x.size(3))
 
 class DualTensor(torch.Tensor):
     '''
@@ -75,8 +80,8 @@ class Fwd2Rev(torch.nn.Module):
         @staticmethod
         def backward(ctx, grad_output):
             input_d, = ctx.saved_tensors
-            input_d = input_d.unsqueeze(0).view(grad_output.size(0),input_d.size(0)//grad_output.size(0),input_d.size(1),input_d.size(2),input_d.size(3))
-            print(f"mul input_d*grad_output, sizes {input_d.size()} {grad_output.size()}")
+            n_batches = grad_output.size(0)
+            print(f"mul input_d*grad_output, sizes {input_d.size()} {grad_output.unsqueeze(2).size()}")
             grad_input = (input_d*grad_output.unsqueeze(2)).sum(dim=[0,2,3,4])
             return grad_input.view(input_d.size(1))
 
@@ -90,18 +95,18 @@ class Conv2d(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput_dual, weight, bias=None):
-            if(isinstance(fwdinput_dual, DualTensor)):
-                print("DUALTENSOR")
-                fwdinput = fwdinput_dual.x
-                fwdinput_d = fwdinput_dual.xd
-                num_dervs = fwdinput_dual.size(0)
-            else:
-                print(f"SOMETHING ELSE: {type(fwdinput_dual)}")
-                fwdinput = fwdinput_dual
-                fwdinput_d = None
-                num_dervs = 0
-            n_batches = fwdinput.size(0)
             with torch.no_grad():
+                if(isinstance(fwdinput_dual, DualTensor)):
+                    print("DUALTENSOR")
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    num_dervs = fwdinput_dual.size(0)
+                else:
+                    print(f"SOMETHING ELSE: {type(fwdinput_dual)}")
+                    fwdinput = fwdinput_dual
+                    fwdinput_d = None
+                    num_dervs = 0
+                n_batches = fwdinput.size(0)
                 if ctx.needs_input_grad[0]:
                     print(f"ctx cat fwdinput {fwdinput.size()}, fwdinput_d {fwdinput_d.size()}")
                     fwdinput_pd = torch.cat([fwdinput, fwdinput_d], dim=0)
@@ -124,10 +129,13 @@ class Conv2d(torch.nn.Module):
                       weight_d[i,0,i//3,i%3] = 1
                 if bias is not None and ctx.needs_input_grad[2]:
                   bias_d[-1] = 1
-                ret_d2 = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d)
+                #ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
+                ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
                 print(f"ret_d cat ret_d1 {ret_d1.size()}, retd2 {ret_d2.size()}")
-                ret_d = torch.cat([ret_d1, channel2batch(ret_d2)], dim=0)
-            ret_p.requires_grad = True
+                if(ret_d1.size(0) > 0):
+                    ret_d = torch.cat([truebatch2outer(ret_d1, n_batches), truebatch2outer(ret_d2, n_batches)], dim=1)
+                else:
+                    ret_d = ret_d2
             ret_dual = DualTensor(torch.zeros(10+num_dervs), ret_p, ret_d)
             print(f"returning DualTensor({type(ret_d)} {type(ret)}) with sizes {ret_d.size()} {ret_p.size()}")
             return ret_dual
