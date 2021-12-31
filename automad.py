@@ -6,7 +6,6 @@ def channel2batch(x):
 
 def truebatch2outer(x, n_batches):
     # reinterpret a [x*n_batches,:,:,:] tensor as a [n_batches,x,:,:,:] tensor
-    print(f"2outer: {x.size()}")
     return x.view(n_batches, x.size(0)//n_batches, x.size(1), x.size(2), x.size(3))
 
 class DualTensor(torch.Tensor):
@@ -36,30 +35,6 @@ class DualTensor(torch.Tensor):
         super().__init__()
         self.x = x
         self.xd = xd
-        self.batches = x.size(0)  # number of true batches (in original network)
-        self.channels = x.size(1) # number of true channels
-        self.img_x = x.size(2)    # image size, in x dimension
-        self.img_y = x.size(3)    # image size, in y dimension
-        self.nbdirs = xd.size(1) / x.size(1) # number of directional derivatives
-
-    def derivativesAsBatches(self):
-      '''
-      Return a view in which the directional derivatives are merged into the
-      batches. This can be useful if the same operation should be applied to all
-      directional derivatives across all true batches. (Where a "true" batch is
-      one that existed in the original network, to which we add additional
-      batches that are actually directional derivatives.)
-      '''
-      return self.view(self.batches*self.nbdirs, self.channels, self.img_x, self.img_y)
-
-    def unsqueezeDerivatives(self):
-      '''
-      Return a view in which the directional derivatives are a separate
-      dimension, just inside the batch dimension.
-      '''
-      ret = self.unsqueeze(0)
-      ret = ret.view(self.batches, self.nbdirs, self.channels, self.img_x, self.img_y)
-      return ret
 
 class Fwd2Rev(torch.nn.Module):
     '''
@@ -81,7 +56,6 @@ class Fwd2Rev(torch.nn.Module):
         def backward(ctx, grad_output):
             input_d, = ctx.saved_tensors
             n_batches = grad_output.size(0)
-            print(f"mul input_d*grad_output, sizes {input_d.size()} {grad_output.unsqueeze(2).size()}")
             grad_input = (input_d*grad_output.unsqueeze(2)).sum(dim=[0,2,3,4])
             return grad_input.view(input_d.size(1))
 
@@ -97,18 +71,15 @@ class Conv2d(torch.nn.Module):
         def forward(ctx, fwdinput_dual, weight, bias=None):
             with torch.no_grad():
                 if(isinstance(fwdinput_dual, DualTensor)):
-                    print("DUALTENSOR")
                     fwdinput = fwdinput_dual.x
                     fwdinput_d = fwdinput_dual.xd
                     num_dervs = fwdinput_dual.size(0)
                 else:
-                    print(f"SOMETHING ELSE: {type(fwdinput_dual)}")
                     fwdinput = fwdinput_dual
                     fwdinput_d = None
                     num_dervs = 0
                 n_batches = fwdinput.size(0)
                 if ctx.needs_input_grad[0]:
-                    print(f"ctx cat fwdinput {fwdinput.size()}, fwdinput_d {fwdinput_d.size()}")
                     fwdinput_pd = torch.cat([fwdinput, fwdinput_d], dim=0)
                 else:
                     fwdinput_pd = fwdinput
@@ -125,24 +96,20 @@ class Conv2d(torch.nn.Module):
                 bias_d = torch.nn.Parameter(torch.zeros(n_directions), requires_grad=False)
                 weight_d = torch.nn.Parameter(torch.zeros(n_directions, 1, 3, 3), requires_grad=False)
                 if ctx.needs_input_grad[1]:
-                  for i in range(9):
-                      weight_d[i,0,i//3,i%3] = 1
+                  weight_d[0:9,:,:,:].view(9*9)[0::10] = 1
                 if bias is not None and ctx.needs_input_grad[2]:
                   bias_d[-1] = 1
                 #ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
                 ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
-                print(f"ret_d cat ret_d1 {ret_d1.size()}, retd2 {ret_d2.size()}")
                 if(ret_d1.size(0) > 0):
                     ret_d = torch.cat([truebatch2outer(ret_d1, n_batches), truebatch2outer(ret_d2, n_batches)], dim=1)
                 else:
                     ret_d = ret_d2
             ret_dual = DualTensor(torch.zeros(10+num_dervs), ret_p, ret_d)
-            print(f"returning DualTensor({type(ret_d)} {type(ret)}) with sizes {ret_d.size()} {ret_p.size()}")
             return ret_dual
 
         @staticmethod
         def backward(ctx, grad_output):
-            print(f"conv backw receiving grad_out with {grad_output.size()}")
             # grad_input is the pass-through of gradient information for layers
             # that happened before us in the forward pass (and will happen after
             # this in the reverse pass).
