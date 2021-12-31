@@ -5,13 +5,13 @@ class Net_AutoMAD(torch.nn.Module):
     def __init__(self):
         super(Net_AutoMAD, self).__init__()
         self.conv1 = automad.Conv2d(1, 1, 3)
-        self.conv2 = automad.Conv2d(1, 1, 3)
         self.f2r = automad.Fwd2Rev()
+        self.conv2 = torch.nn.Conv2d(1, 1, 3)
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.conv2(x)
         x = self.f2r(x)
+        x = self.conv2(x)
         return x
 
 class Net_AutoGrad(torch.nn.Module):
