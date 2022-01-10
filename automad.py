@@ -1,8 +1,8 @@
 import torch
 
-def channel2batch(x):
-    # reinterpret a [x,y,:,:] tensor as a [x*y,1,:,:] tensor
-    return x.view(x.size(1)*x.size(0), 1, x.size(2), x.size(3))
+def derivativechannel2batch(x, num_dervs):
+    # reinterpret a [x,y*num_dervs,:,:] tensor as a [x*num_dervs,y,:,:] tensor
+    return x.view(x.size(0)*num_dervs, x.size(1)//num_dervs, x.size(2), x.size(3))
 
 def truebatch2outer(x, n_batches):
     # reinterpret a [x*n_batches,:,:,:] tensor as a [n_batches,x,:,:,:] tensor
@@ -56,7 +56,8 @@ class Fwd2Rev(torch.nn.Module):
         def backward(ctx, grad_output):
             input_d, = ctx.saved_tensors
             n_batches = grad_output.size(0)
-            grad_input = (input_d*grad_output.unsqueeze(2)).sum(dim=[0,2,3,4])
+            print(f"mul input_d({input_d.size()}) * grad_output({grad_output.unsqueeze(1).size()})")
+            grad_input = (input_d*grad_output.unsqueeze(1)).sum(dim=[0,2,3,4])
             return grad_input.view(input_d.size(1))
 
     def __init__(self):
@@ -87,22 +88,24 @@ class Conv2d(torch.nn.Module):
                 ret = torch.nn.functional.conv2d(fwdinput_pd, weight, bias)
                 ret_p = ret[0:n_batches,:,:,:]
                 ret_d1 = ret[n_batches:,:,:,:]
-                # Derivative Propagation
+                # Determine size and shape of derivative objects.
                 ctx.num_dervs = 0
                 if ctx.needs_input_grad[1]:
                     ctx.weight_numel = weight.numel()
                     ctx.num_dervs += ctx.weight_numel
                     ctx.weight_size = weight.size()
                 if bias is not None and ctx.needs_input_grad[2]:
-                    ctx.num_dervs += 1
-                bias_d = torch.nn.Parameter(torch.zeros(ctx.num_dervs), requires_grad=False)
+                    ctx.num_dervs += bias.numel()
+                    ctx.bias_numel = bias.numel()
+                bias_d = torch.nn.Parameter(torch.zeros(ctx.num_dervs*ctx.weight_size[0]), requires_grad=False)
                 weight_d = torch.nn.Parameter(torch.zeros(ctx.num_dervs*ctx.weight_size[0], ctx.weight_size[1], ctx.weight_size[2], ctx.weight_size[3]), requires_grad=False)
+                # Seeding
                 if ctx.needs_input_grad[1]:
-                  weight_d[0:ctx.weight_numel,:,:,:].view(ctx.weight_numel**2)[0::ctx.weight_numel+1] = 1
+                  weight_d[0:ctx.weight_numel,:,:,:].flatten()[0::ctx.weight_numel+1] = 1
                 if bias is not None and ctx.needs_input_grad[2]:
-                  bias_d[-1] = 1
-                #ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
-                ret_d2 = channel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d))
+                  bias_d[-bias.numel():] = 1
+                # Derivative Propagation
+                ret_d2 = derivativechannel2batch(torch.nn.functional.conv2d(fwdinput, weight_d, bias_d), ctx.num_dervs)
                 if(ret_d1.size(0) > 0):
                     ret_d = torch.cat([truebatch2outer(ret_d1, n_batches), truebatch2outer(ret_d2, n_batches)], dim=1)
                 else:
@@ -126,7 +129,7 @@ class Conv2d(torch.nn.Module):
             else:
                 grad_weight = None
             if(ctx.needs_input_grad[2]):
-                grad_bias = grad_output[-1].view(1)
+                grad_bias = grad_output[-ctx.bias_numel:].view(ctx.bias_numel)
             else:
                 grad_bias = None
             return grad_input, grad_weight, grad_bias

@@ -4,8 +4,8 @@ import torch
 class Net_AutoMAD(torch.nn.Module):
     def __init__(self):
         super(Net_AutoMAD, self).__init__()
-        self.conv1 = automad.Conv2d(1, 1, 5)
-        self.conv2 = automad.Conv2d(1, 1, 7)
+        self.conv1 = automad.Conv2d(3, 4, 3)
+        self.conv2 = automad.Conv2d(4, 5, 3)
         self.f2r = automad.Fwd2Rev()
 
     def forward(self, x):
@@ -17,8 +17,8 @@ class Net_AutoMAD(torch.nn.Module):
 class Net_AutoGrad(torch.nn.Module):
     def __init__(self):
         super(Net_AutoGrad, self).__init__()
-        self.conv1 = torch.nn.Conv2d(1, 1, 5)
-        self.conv2 = torch.nn.Conv2d(1, 1, 7)
+        self.conv1 = torch.nn.Conv2d(3, 4, 3)
+        self.conv2 = torch.nn.Conv2d(4, 5, 3)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -26,14 +26,14 @@ class Net_AutoGrad(torch.nn.Module):
         return x
 
 n_batches = 7
-nninput = torch.randn(n_batches, 1, 16, 16)
-tgt = torch.randn(n_batches, 1, 6, 6)
+nninput = torch.randn(n_batches, 3, 16, 16)
+tgt = torch.randn(n_batches, 5, 12, 12)
 ##################
 # reverse mode AD
 ##################
 netrev = Net_AutoGrad()
-netrev.conv1.bias = torch.nn.Parameter(torch.zeros(1), requires_grad=True)
-netrev.conv2.bias = torch.nn.Parameter(torch.zeros(1), requires_grad=True)
+netrev.conv1.bias = torch.nn.Parameter(torch.zeros(4), requires_grad=True)
+netrev.conv2.bias = torch.nn.Parameter(torch.zeros(5), requires_grad=True)
 netrev.zero_grad()
 outrev = netrev(nninput)
 lossrev = torch.nn.MSELoss(reduction='sum')
