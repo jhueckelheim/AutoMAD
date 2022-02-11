@@ -1,4 +1,4 @@
-import automad
+import automad_dense as automad
 import torch
 
 class Net_AutoMAD(torch.nn.Module):
@@ -25,15 +25,15 @@ class Net_AutoGrad(torch.nn.Module):
         x = self.conv2(x)
         return x
 
-n_batches = 7
+n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
 tgt = torch.randn(n_batches, 5, 12, 12)
 ##################
 # reverse mode AD
 ##################
 netrev = Net_AutoGrad()
-netrev.conv1.bias = torch.nn.Parameter(torch.zeros(4), requires_grad=True)
-netrev.conv2.bias = torch.nn.Parameter(torch.zeros(5), requires_grad=True)
+#netrev.conv1.bias = torch.nn.Parameter(torch.zeros(4), requires_grad=True)
+#netrev.conv2.bias = torch.nn.Parameter(torch.zeros(5), requires_grad=True)
 netrev.zero_grad()
 outrev = netrev(nninput)
 lossrev = torch.nn.MSELoss(reduction='sum')

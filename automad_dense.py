@@ -1,8 +1,12 @@
 import torch
 
 def channel2batch(x, out_channels=1):
-    # reinterpret a [x,y,:,:] tensor as a [x*y,1,:,:] tensor
+    # reinterpret a [x,y*c,:,:] tensor as a [x*c,y,:,:] tensor
     return x.view(x.size(0)*x.size(1)//out_channels, out_channels, x.size(2), x.size(3))
+
+def truebatch2outer(x, n_batch):
+    # reinterpret a [x*n_batch,:,:,:] tensor as a [n_batch,x,:,:,:] tensor
+    return x.view(n_batch, x.size(0)//n_batch, x.size(1), x.size(2), x.size(3))
 
 class DualTensor(torch.Tensor):
     '''
@@ -53,8 +57,10 @@ class Fwd2Rev(torch.nn.Module):
         @staticmethod
         def backward(ctx, grad_output):
             input_d, = ctx.saved_tensors
+            input_d = truebatch2outer(input_d, grad_output.size(0))
+            grad_output = grad_output.unsqueeze(1)
             print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
-            grad_input = (input_d*grad_output).sum(dim=[1,2,3])
+            grad_input = (input_d*grad_output).sum(dim=[0,2,3,4])
             print(f"F2R backward return grad_input({grad_input.size()})")
             return grad_input.flatten()
 
@@ -122,13 +128,15 @@ class Conv2d(torch.nn.Module):
                 if bias is not None and ctx.needs_input_grad[2]:
                     bias_d[-n_dervs_b*out_channels::n_dervs_b+1] = 1
                 torch.set_printoptions(profile="full")
-                print(f"n bias dervs {bias_d.sum()} {n_dervs_b}")
-                #print(weight_d)
                 # Derivative Propagation
                 ret_d1 = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d)
                 ret_d1 = channel2batch(ret_d1, out_channels)
                 if(ret_d0 != None):
-                    ret_d = torch.cat([ret_d0, ret_d1], dim=0)
+                    n_batch = fwdinput.size(0)
+                    ret_d0 = truebatch2outer(ret_d0, n_batch)
+                    ret_d1 = truebatch2outer(ret_d1, n_batch)
+                    ret_d = torch.cat([ret_d0, ret_d1], dim=1)
+                    ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
                 else:
                     ret_d = ret_d1
 
