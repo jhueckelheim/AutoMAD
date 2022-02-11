@@ -5,11 +5,13 @@ class Net_AutoMAD(torch.nn.Module):
     def __init__(self):
         super(Net_AutoMAD, self).__init__()
         self.conv1 = automad.Conv2d(3, 4, 3)
+        self.tanh = automad.Tanh()
         self.conv2 = automad.Conv2d(4, 5, 3)
         self.f2r = automad.Fwd2Rev()
 
     def forward(self, x):
         x = self.conv1(x)
+        x = self.tanh(x)
         x = self.conv2(x)
         x = self.f2r(x)
         return x
@@ -18,10 +20,12 @@ class Net_AutoGrad(torch.nn.Module):
     def __init__(self):
         super(Net_AutoGrad, self).__init__()
         self.conv1 = torch.nn.Conv2d(3, 4, 3)
+        self.tanh = torch.nn.Tanh()
         self.conv2 = torch.nn.Conv2d(4, 5, 3)
 
     def forward(self, x):
         x = self.conv1(x)
+        x = self.tanh(x)
         x = self.conv2(x)
         return x
 

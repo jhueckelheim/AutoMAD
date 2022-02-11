@@ -183,3 +183,53 @@ class Conv2d(torch.nn.Module):
 
     def forward(self, x):
         return self.__Func__.apply(x, self.weight, self.bias)
+
+class Tanh(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    # In this case, the incoming tensor is already a DualTensor,
+                    # which means we are probably not the first layer in this
+                    # network. We extract the primal and derivative inputs.
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    # In this case, the incoming tensor is just a plain tensor,
+                    # so we are probably the first (differentiated) layer. There
+                    # is no incoming derivative for us to forward-propagate.
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+
+                ###############################################################
+                # Primal Evaluation: $ret = tanh(x)$
+                ###############################################################
+                ret = torch.nn.functional.tanh(fwdinput)
+
+                ###############################################################
+                # Forward-propagation of incoming derivatives:
+                # $\dot{ret} = (1-tanh^2(x))*\dot{x}$
+                ###############################################################
+                if ctx.needs_input_grad[0]:
+                    n_batch = fwdinput.size(0)
+                    fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
+                    ret_p = ret.unsqueeze(1)
+                    ret_d = (-ret_p*ret_p + 1)*fwdinput_d
+                    ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
+                else:
+                    ret_d = None
+
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output
+
+    def __init__(self):
+        super(Tanh, self).__init__()
+
+    def forward(self, x):
+        return self.__Func__.apply(x)
