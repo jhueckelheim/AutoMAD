@@ -206,7 +206,7 @@ class Tanh(torch.nn.Module):
                 ###############################################################
                 # Primal Evaluation: $ret = tanh(x)$
                 ###############################################################
-                ret = torch.nn.functional.tanh(fwdinput)
+                ret = torch.tanh(fwdinput)
 
                 ###############################################################
                 # Forward-propagation of incoming derivatives:
@@ -216,7 +216,7 @@ class Tanh(torch.nn.Module):
                     n_batch = fwdinput.size(0)
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
                     ret_p = ret.unsqueeze(1)
-                    ret_d = (-ret_p*ret_p + 1)*fwdinput_d
+                    ret_d = (1 - ret_p*ret_p)*fwdinput_d
                     ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
                 else:
                     ret_d = None
@@ -233,3 +233,49 @@ class Tanh(torch.nn.Module):
 
     def forward(self, x):
         return self.__Func__.apply(x)
+
+class AvgPool2d(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual, kernel_size):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    # In this case, the incoming tensor is already a DualTensor,
+                    # which means we are probably not the first layer in this
+                    # network. We extract the primal and derivative inputs.
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    # In this case, the incoming tensor is just a plain tensor,
+                    # so we are probably the first (differentiated) layer. There
+                    # is no incoming derivative for us to forward-propagate.
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+
+                ###############################################################
+                # Primal Evaluation
+                ###############################################################
+                ret = torch.nn.functional.avg_pool2d(fwdinput, kernel_size=kernel_size)
+
+                ###############################################################
+                # Forward-propagation of incoming derivatives
+                ###############################################################
+                if ctx.needs_input_grad[0]:
+                    ret_d = torch.nn.functional.avg_pool2d(fwdinput_d, kernel_size=kernel_size)
+                else:
+                    ret_d = None
+
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output, None
+
+    def __init__(self, kernel_size):
+        super(AvgPool2d, self).__init__()
+        self.kernel_size = kernel_size
+
+    def forward(self, x):
+        return self.__Func__.apply(x, self.kernel_size)

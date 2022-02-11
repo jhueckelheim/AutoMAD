@@ -7,12 +7,14 @@ class Net_AutoMAD(torch.nn.Module):
         self.conv1 = automad.Conv2d(3, 4, 3)
         self.tanh = automad.Tanh()
         self.conv2 = automad.Conv2d(4, 5, 3)
+        self.avg = automad.AvgPool2d(2)
         self.f2r = automad.Fwd2Rev()
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.tanh(x)
         x = self.conv2(x)
+        x = self.avg(x)
         x = self.f2r(x)
         return x
 
@@ -22,16 +24,18 @@ class Net_AutoGrad(torch.nn.Module):
         self.conv1 = torch.nn.Conv2d(3, 4, 3)
         self.tanh = torch.nn.Tanh()
         self.conv2 = torch.nn.Conv2d(4, 5, 3)
+        self.avg = torch.nn.AvgPool2d(2)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.tanh(x)
         x = self.conv2(x)
+        x = self.avg(x)
         return x
 
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
-tgt = torch.randn(n_batches, 5, 12, 12)
+tgt = torch.randn(n_batches, 5, 6, 6)
 ##################
 # reverse mode AD
 ##################
