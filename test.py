@@ -9,6 +9,7 @@ class Net_AutoMAD(torch.nn.Module):
         self.relu = automad.ReLU()
         self.conv2 = automad.Conv2d(4, 5, 3)
         self.avg = automad.AvgPool2d(2)
+        self.linear = automad.Linear(5*6*6, 7)
         self.f2r = automad.Fwd2Rev()
 
     def forward(self, x):
@@ -17,6 +18,9 @@ class Net_AutoMAD(torch.nn.Module):
         x = self.relu(x)
         x = self.conv2(x)
         x = self.avg(x)
+        print(x.shape)
+        x = automad.flatten(x, 1)
+        x = self.linear(x)
         x = self.f2r(x)
         return x
 
@@ -29,6 +33,7 @@ class Net_AutoGrad(torch.nn.Module):
         self.relu = torch.nn.ReLU()
         self.conv2 = torch.nn.Conv2d(4, 5, 3)
         self.avg = torch.nn.AvgPool2d(2)
+        self.linear = torch.nn.Linear(5*6*6, 7)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -36,11 +41,13 @@ class Net_AutoGrad(torch.nn.Module):
         x = self.relu(x)
         x = self.conv2(x)
         x = self.avg(x)
+        x = torch.flatten(x, 1)
+        x = self.linear(x)
         return x
 
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
-tgt = torch.randn(n_batches, 5, 6, 6)
+tgt = torch.randn(n_batches, 7)
 
 def test_forward_reverse():
     # Reverse
