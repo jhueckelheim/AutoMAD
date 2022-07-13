@@ -279,3 +279,216 @@ class AvgPool2d(torch.nn.Module):
 
     def forward(self, x):
         return self.__Func__.apply(x, self.kernel_size)
+
+
+class Rev2Fwd(torch.nn.Module):
+    '''
+    A neural network layer whose only purpose is to glue reverse-mode AD and
+    forward-mode AD together. It will store forward-propagated derivatives
+    during the forward sweep, and combine them with the reverse-propagated
+    derivatives during the reverse sweep, immediately resulting in the gradient
+    tensors for all preceding forward layers.
+    '''
+
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def backward(ctx, revinput):  # fwdinput
+            input_p = revinput.x  # fwdinput
+            input_d = revinput.xd  # fwdinput
+            print(f"R2F store input_d({input_d.size()})")
+            ctx.save_for_backward(input_d)
+            print(f"F2R forward return input_p({input_p.size()})")
+            return input_p
+
+        '''
+        If in a layer after forward to rev glue layer, then OK
+        Everything before glue layer is the interesting stuff
+        Forward mode would have computed the gradient with respect to the output,
+        but don't currently have the output.
+        The output comes from both the back propagation and forward.
+        Glue layer combines the partials from forward and reverse modes.
+        Conv layer was created using pattern matching, but results were always wrong.
+        More than 1 input batch, or additional input channels threw the conv layer off.
+
+        Look at an intermediate variable:
+        temp = sin(x)
+        y = cos(temp)
+
+        Forward mode AD on above. X_dot, temp_dot, y_dot. What do they mean?
+        ydot = der of y wrt x
+        tempdot = der of temp wrt to input (which is x)
+        forward mode = der of variable wrt to input
+        xbar = der of output wrt x 
+        tempbar = der of output wrt to temp
+        ybar = der of output wrt to y => 1
+        xbar = der of output wrt to x => 1
+
+        glue layer has both tempdot and tempbar.
+        forward to rev: layers before glue layer have tempdot, but they want to have tempbar
+        [not correct] rev to forward: layers before glue layer have tempbar, but they want to have tempdot
+        special layer to develop that feeds the correct partials to get the reverse sweep started.
+        imagine the normal implementation of back propagation.
+        does forward pass
+        at some point they are hit by reverse pass
+        at that point the reverse point has some reverse propagated sensitivities 
+        find a way to make it look as if you had done the reverse pass up until the glue layer, 
+            but have the reverse partials in the right places
+        find a way to kick start the process in the middle of the network
+        all the info is there, just need the plumbing 
+        how to trick pytorch into doing it
+        the loss function does something similar, multi dimensional tensor thing in the forward mode,
+        which is reduced to a scalar loss
+        in reverse mode, the loss function is basically what kicks start the whole thing
+        Make this rev2forward look like a loss function to pytorch, even though it really isn't,
+        and make sure that custom loss function layer/thing feeds the partials into the right places
+        '''
+
+        @staticmethod
+        def forward(ctx, grad_output):
+            input_d, = ctx.saved_tensors
+            input_d = truebatch2outer(input_d, grad_output.size(0))
+            grad_output = grad_output.unsqueeze(1)
+            print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
+            grad_input = (input_d * grad_output).sum(dim=[0, 2, 3, 4])
+            print(f"F2R backward return grad_input({grad_input.size()})")
+            return grad_input.flatten()
+
+    def __init__(self):
+        super(Fwd2Rev, self).__init__()
+
+    def forward(self, x):
+        return self.__Func__.apply(x)
+
+class ReLU(torch.nn.Module):
+    '''
+    TODO: convert torch's ReLU activation function into AutoMAD
+    Source: https://pytorch.org/docs/stable/_modules/torch/nn/modules/activation.html#ReLU
+    Applies the rectified linear unit function element-wise:
+    :math:`\text{ReLU}(x) = (x)^+ = \max(0, x)`
+    Args:
+        inplace: can optionally do the operation in-place. Default: ``False``
+    Shape:
+        - Input: :math:`(*)`, where :math:`*` means any number of dimensions.
+        - Output: :math:`(*)`, same shape as the input.
+    .. image:: ../scripts/activation_images/ReLU.png
+    Examples::
+        >>> m = torch.nn.ReLU()
+        >>> input = torch.randn(2)
+        >>> output = m(input)
+      An implementation of CReLU - https://arxiv.org/abs/1603.05201
+        >>> m = torch.nn.ReLU()
+        >>> input = torch.randn(2).unsqueeze(0)
+        >>> output = torch.cat((m(input),m(-input)))
+    '''
+
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual):
+            with torch.no_grad():
+                # print('Min Value of ctx:' + str(torch.min(ctx)))
+                # print('Max Value of ctx:' + str(torch.max(ctx)))
+                if ctx.needs_input_grad[0]:
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+                ####################################
+                # Primal Evaluation: $ret = tanh(x)$
+                ####################################
+                print('Min Value of fwdinput_dual:' + str(torch.min(fwdinput_dual)))
+                print('Max Value of fwdinput_dual:' + str(torch.max(fwdinput_dual)))
+                ret = torch.nn.functional.relu(fwdinput)
+
+                ##############################################
+                # Forward-propagation of incoming derivatives:
+                # $\dot{ret} = 0 if x < 0$
+                # $\dot{ret} = 1 if x > 0$
+                # $\dot{ret} = 0 if x = 0$ so that matrix is more sparse, see references
+                # https://stats.stackexchange.com/questions/333394/what-is-the-derivative-of-the-relu-activation-function
+                # https://www.quora.com/How-do-we-compute-the-gradient-of-a-ReLU-for-backpropagation
+                ##############################################
+                if ctx.needs_input_grad[0]:
+                    n_batch = fwdinput.size(0)
+                    fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
+                    ret_p = ret.unsqueeze(1)
+                    # print('fwdinput_d:')
+                    # print(fwdinput_d.size())
+                    # print('ret_p:')
+                    # print(ret_p.size())
+                    # ret_p: torch.Size([2, 1, 4, 14, 14]).
+                    # Check if any of the values are greater than zero, or all?
+                    # print(torch.all(fwdinput_d > 0))
+                    ret_d = torch.where(fwdinput_d > 0, 1.0, 0.0)
+                    print('ret_d size:')
+                    print(ret_d.size())
+                    '''
+                    if torch.all(fwdinput_d > 0):
+                        print('Went into first boolean check')
+                        ret_d = torch.full(ret_p.size(), 1.0) # should have used fwdinput_d.size()
+                    else:
+                        print('Went into second boolean check')
+                        print('ret_p size:')
+                        print(ret_p.size())
+                        ret_d = torch.full(ret_p.size(), 0.0)
+                    '''
+
+                    ret_d = ret_d.view(ret_d.size(0) * ret_d.size(1), *ret_d.shape[2:])
+                else:
+                    ret_d = None
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            print('Min Value of ret_dual:' + str(torch.min(ret_dual)))
+            print('Max Value of ret_dual:' + str(torch.max(ret_dual)))
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            print('grad_output from backward:')
+            print(grad_output.size())
+            return grad_output
+
+    def __init__(self):
+        super(ReLU, self).__init__()
+
+    def forward(self, x, ):
+        return self.__Func__.apply(x)
+
+class Rev2Fwd(torch.nn.Module):
+    '''
+    A neural network layer whose only purpose is to glue reverse-mode AD and
+    forward-mode AD together. It will store forward-propagated derivatives
+    during the forward sweep, and combine them with the reverse-propagated
+    derivatives during the reverse sweep, immediately resulting in the gradient
+    tensors for all preceding forward layers.
+    '''
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def backward(ctx, revinput):
+            input_p = revinput.x
+            input_d = revinput.xd
+            print(f"R2F store input_d({input_d.size()})")
+            '''
+            There is a save_for_forward function, which can be found here:
+            https://pytorch.org/docs/stable/_modules/torch/autograd/function.html#FunctionCtx.save_for_backward
+            This makes the pattern matching for implementing the inverse of Fwd2Rev easier.
+            '''
+            ctx.save_for_forward(input_d)
+            print(f"R2F backward return input_p({input_p.size()})")
+            return input_p
+
+        @staticmethod
+        def forward(ctx, grad_output):
+            input_d, = ctx.saved_tensors
+            input_d = truebatch2outer(input_d, grad_output.size(0))
+            grad_output = grad_output.unsqueeze(1)
+            print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
+            grad_input = (input_d * grad_output).sum(dim=[0, 2, 3, 4])
+            print(f"R2F forward return grad_input({grad_input.size()})")
+            return grad_input.flatten()
+
+    def __init__(self):
+        super(Rev2Fwd, self).__init__()
+
+    def backward(self, x):
+        return self.__Func__.apply(x)
