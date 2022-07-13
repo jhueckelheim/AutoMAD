@@ -462,59 +462,20 @@ class Rev2Fwd(torch.nn.Module):
     derivatives during the reverse sweep, immediately resulting in the gradient
     tensors for all preceding forward layers.
     '''
-
     class __Func__(torch.autograd.Function):
         @staticmethod
-        def backward(ctx, revinput):  # fwdinput
-            input_p = revinput.x  # fwdinput
-            input_d = revinput.xd  # fwdinput
+        def backward(ctx, revinput):
+            input_p = revinput.x
+            input_d = revinput.xd
             print(f"R2F store input_d({input_d.size()})")
-            ctx.save_for_backward(input_d)
-            print(f"F2R forward return input_p({input_p.size()})")
+            '''
+            There is a save_for_forward function, which can be found here:
+            https://pytorch.org/docs/stable/_modules/torch/autograd/function.html#FunctionCtx.save_for_backward
+            This makes the pattern matching for implementing the inverse of Fwd2Rev easier.
+            '''
+            ctx.save_for_forward(input_d)
+            print(f"R2F backward return input_p({input_p.size()})")
             return input_p
-
-        '''
-        If in a layer after forward to rev glue layer, then OK
-        Everything before glue layer is the interesting stuff
-        Forward mode would have computed the gradient with respect to the output,
-        but don't currently have the output.
-        The output comes from both the back propagation and forward.
-        Glue layer combines the partials from forward and reverse modes.
-        Conv layer was created using pattern matching, but results were always wrong.
-        More than 1 input batch, or additional input channels threw the conv layer off.
-
-        Look at an intermediate variable:
-        temp = sin(x)
-        y = cos(temp)
-
-        Forward mode AD on above. X_dot, temp_dot, y_dot. What do they mean?
-        ydot = der of y wrt x
-        tempdot = der of temp wrt to input (which is x)
-        forward mode = der of variable wrt to input
-        xbar = der of output wrt x 
-        tempbar = der of output wrt to temp
-        ybar = der of output wrt to y => 1
-        xbar = der of output wrt to x => 1
-
-        glue layer has both tempdot and tempbar.
-        forward to rev: layers before glue layer have tempdot, but they want to have tempbar
-        [not correct] rev to forward: layers before glue layer have tempbar, but they want to have tempdot
-        special layer to develop that feeds the correct partials to get the reverse sweep started.
-        imagine the normal implementation of back propagation.
-        does forward pass
-        at some point they are hit by reverse pass
-        at that point the reverse point has some reverse propagated sensitivities 
-        find a way to make it look as if you had done the reverse pass up until the glue layer, 
-            but have the reverse partials in the right places
-        find a way to kick start the process in the middle of the network
-        all the info is there, just need the plumbing 
-        how to trick pytorch into doing it
-        the loss function does something similar, multi dimensional tensor thing in the forward mode,
-        which is reduced to a scalar loss
-        in reverse mode, the loss function is basically what kicks start the whole thing
-        Make this rev2forward look like a loss function to pytorch, even though it really isn't,
-        and make sure that custom loss function layer/thing feeds the partials into the right places
-        '''
 
         @staticmethod
         def forward(ctx, grad_output):
@@ -523,11 +484,11 @@ class Rev2Fwd(torch.nn.Module):
             grad_output = grad_output.unsqueeze(1)
             print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
             grad_input = (input_d * grad_output).sum(dim=[0, 2, 3, 4])
-            print(f"F2R backward return grad_input({grad_input.size()})")
+            print(f"R2F forward return grad_input({grad_input.size()})")
             return grad_input.flatten()
 
     def __init__(self):
-        super(Fwd2Rev, self).__init__()
+        super(Rev2Fwd, self).__init__()
 
-    def forward(self, x):
+    def backward(self, x):
         return self.__Func__.apply(x)
