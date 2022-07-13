@@ -49,9 +49,7 @@ class Fwd2Rev(torch.nn.Module):
         def forward(ctx, fwdinput):
             input_p = fwdinput.x
             input_d = fwdinput.xd
-            print(f"F2R store input_d({input_d.size()})")
             ctx.save_for_backward(input_d)
-            print(f"F2R forward return input_p({input_p.size()})")
             return input_p
 
         @staticmethod
@@ -59,9 +57,7 @@ class Fwd2Rev(torch.nn.Module):
             input_d, = ctx.saved_tensors
             input_d = truebatch2outer(input_d, grad_output.size(0))
             grad_output = grad_output.unsqueeze(1)
-            print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
             grad_input = (input_d*grad_output).sum(dim=[0,2,3,4])
-            print(f"F2R backward return grad_input({grad_input.size()})")
             return grad_input.flatten()
 
     def __init__(self):
@@ -73,7 +69,7 @@ class Fwd2Rev(torch.nn.Module):
 class Conv2d(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
-        def forward(ctx, fwdinput_dual, weight, bias=None):
+        def forward(ctx, fwdinput_dual, weight, bias, args, kwargs):
             with torch.no_grad():
                 ###############################################################
                 # Forward-propagation of incoming derivatives: $w*\dot{x}$
@@ -84,7 +80,7 @@ class Conv2d(torch.nn.Module):
                     # network. We extract the primal and derivative inputs.
                     fwdinput = fwdinput_dual.x
                     fwdinput_d = fwdinput_dual.xd
-                    ret_d0 = torch.nn.functional.conv2d(fwdinput_d, weight, bias=None)
+                    ret_d0 = torch.nn.functional.conv2d(fwdinput_d, weight, None, *args, **kwargs)
                     n_dervs_incoming = fwdinput_dual.size(0)
                 else:
                     # In this case, the incoming tensor is just a plain tensor,
@@ -127,9 +123,8 @@ class Conv2d(torch.nn.Module):
                     weight_d[0:n_dervs_w*out_channels,:,:,:].flatten()[0::n_dervs_w+1] = 1
                 if bias is not None and ctx.needs_input_grad[2]:
                     bias_d[-n_dervs_b*out_channels::n_dervs_b+1] = 1
-                torch.set_printoptions(profile="full")
                 # Derivative Propagation
-                ret_d1 = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d)
+                ret_d1 = torch.nn.functional.conv2d(fwdinput, weight_d, bias_d, *args, **kwargs)
                 ret_d1 = channel2batch(ret_d1, out_channels)
                 if(ret_d0 != None):
                     n_batch = fwdinput.size(0)
@@ -143,10 +138,9 @@ class Conv2d(torch.nn.Module):
                 ###############################################################
                 # Primal Evaluation: $w*x+b$
                 ###############################################################
-                ret = torch.nn.functional.conv2d(fwdinput, weight, bias)
+                ret = torch.nn.functional.conv2d(fwdinput, weight, bias, *args, **kwargs)
 
             ret_dual = DualTensor(torch.zeros(n_dervs+n_dervs_incoming), ret, ret_d)
-            print(f"C2D forward return ret_dual({ret_dual.size()}, {ret.size()} {ret_d.size()})")
             return ret_dual
 
         @staticmethod
@@ -168,10 +162,9 @@ class Conv2d(torch.nn.Module):
                 grad_bias = grad_output[-ctx.derv_dims['bias'][0]:].view(ctx.derv_dims['bias'][1])
             else:
                 grad_bias = None
-            print(f"C2D backward return grad_in({grad_input.size()}) grad_w({grad_weight.size()}) grad_bias({grad_bias.size()})")
-            return grad_input, grad_weight, grad_bias
+            return grad_input, grad_weight, grad_bias, None, None
 
-    def __init__(self, in_channels, out_channels, kernel_size, bias = True):
+    def __init__(self, in_channels, out_channels, kernel_size, bias = True, *args, **kwargs):
         super(Conv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -180,9 +173,11 @@ class Conv2d(torch.nn.Module):
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, bias)
         self.weight = self.conv.weight
         self.bias = self.conv.bias
+        self.args = args
+        self.kwargs = kwargs
 
     def forward(self, x):
-        return self.__Func__.apply(x, self.weight, self.bias)
+        return self.__Func__.apply(x, self.weight, self.bias, self.args, self.kwargs)
 
 class Tanh(torch.nn.Module):
     class __Func__(torch.autograd.Function):
@@ -237,7 +232,7 @@ class Tanh(torch.nn.Module):
 class AvgPool2d(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
-        def forward(ctx, fwdinput_dual, kernel_size):
+        def forward(ctx, fwdinput_dual, kernel_size, args, kwargs):
             with torch.no_grad():
                 if ctx.needs_input_grad[0]:
                     # In this case, the incoming tensor is already a DualTensor,
@@ -256,13 +251,13 @@ class AvgPool2d(torch.nn.Module):
                 ###############################################################
                 # Primal Evaluation
                 ###############################################################
-                ret = torch.nn.functional.avg_pool2d(fwdinput, kernel_size=kernel_size)
+                ret = torch.nn.functional.avg_pool2d(fwdinput, kernel_size=kernel_size, *args, **kwargs)
 
                 ###############################################################
                 # Forward-propagation of incoming derivatives
                 ###############################################################
                 if ctx.needs_input_grad[0]:
-                    ret_d = torch.nn.functional.avg_pool2d(fwdinput_d, kernel_size=kernel_size)
+                    ret_d = torch.nn.functional.avg_pool2d(fwdinput_d, kernel_size=kernel_size, *args, **kwargs)
                 else:
                     ret_d = None
 
@@ -271,11 +266,13 @@ class AvgPool2d(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
-            return grad_output, None
+            return grad_output, None, None, None
 
-    def __init__(self, kernel_size):
+    def __init__(self, kernel_size, *args, **kwargs):
         super(AvgPool2d, self).__init__()
         self.kernel_size = kernel_size
+        self.args = args
+        self.kwargs = kwargs
 
     def forward(self, x):
-        return self.__Func__.apply(x, self.kernel_size)
+        return self.__Func__.apply(x, self.kernel_size, self.args, self.kwargs)
