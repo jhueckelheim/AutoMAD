@@ -75,83 +75,112 @@ class Fwd2Rev(torch.nn.Module):
     def forward(self, x):
         return self.__Func__.apply(x)
 
+class ForwardUtilities:
+    @staticmethod
+    def propagate(img, img_d, weight, weight_d, bias, bias_d, func, reshape_biasd, *args, **kwargs):
+        n_batch = img.size(0)
+        out_channels = weight.size(0)
+    
+        ###############################################################
+        # Forward-propagation of weight/bias derivatives:
+        # $\dot{w}*x$ and $\dot{b}$
+        ###############################################################
+        ret_d0 = None
+        if(weight_d != None):
+            ret_d0 = func(img, weight_d, bias_d, *args, **kwargs)
+            ret_d0 = channel2batch(ret_d0, out_channels)
+        elif(bias_d != None):
+            ret_d0 = reshape_biasd(bias_d, img, weight, *args, **kwargs)
+            ret_d0 = channel2batch(ret_d0.contiguous(), out_channels)
+    
+        ###############################################################
+        # Forward-propagation of img derivatives: $w*\dot{x}$
+        ###############################################################
+        if img_d != None:
+            # In this case, the incoming tensor is already a DualTensor,
+            # which means we are probably not the first layer in this
+            # network. We extract the primal and derivative inputs.
+            ret_d1 = func(img_d, weight, None, *args, **kwargs)
+            ret_d1 = func(img_d, weight, None, *args, **kwargs)
+    
+        ###############################################################
+        # Assembly of derivative tensor
+        ###############################################################
+            if ret_d0 == None:
+                ret_d = ret_d1
+            else:
+                ret_d = ret_d0 + ret_d1
+        else:
+            ret_d = ret_d0
+        return ret_d
+
+    @staticmethod
+    def seed_cartesian(n_dervs, dims):
+        seed = torch.nn.Parameter(
+                   torch.zeros(n_dervs*dims[0], *dims[1:]),
+                   requires_grad=False)
+        seed.flatten()[0::n_dervs+1] = 1
+        return seed
+
 class Linear(torch.nn.Module):
     class __Func__(torch.autograd.Function):
-        @staticmethod
         def forward(ctx, fwdinput_dual, weight, bias, args, kwargs):
-            with torch.no_grad():
-                ###############################################################
-                # Forward-propagation of incoming derivatives: $w*\dot{x}$
-                ###############################################################
-                if ctx.needs_input_grad[0]:
-                    # In this case, the incoming tensor is already a DualTensor,
-                    # which means we are probably not the first layer in this
-                    # network. We extract the primal and derivative inputs.
-                    fwdinput = fwdinput_dual.x
-                    fwdinput_d = fwdinput_dual.xd
-                    ret_d0 = torch.nn.functional.linear(fwdinput_d, weight, None, *args, **kwargs)
-                    n_dervs_incoming = fwdinput_dual.size(0)
-                else:
-                    # In this case, the incoming tensor is just a plain tensor,
-                    # so we are probably the first (differentiated) layer. There
-                    # is no incoming derivative for us to forward-propagate.
-                    fwdinput = fwdinput_dual
-                    ret_d0 = None
-                    n_dervs_incoming = 0
+            def reshape_biasd(bias_d, img, *args, **kwargs):
+                bias_d_shape = bias_d.shape
+                n_batch = img.size(0)
+                return bias_d.unsqueeze(0).expand(n_batch, *bias_d_shape)
 
-                ###############################################################
-                # Evaluate new derivatives created by this layer:
-                # $\dot{w}*x$ and $\dot{b}$
-                ###############################################################
-                # Determine size and shape of derivative objects for weight_d
-                # and bias_d (the "new" derivatives with respect to the
-                # trainable parameters of the current layer). The number of
-                # derivatives is essentially the sum of weight.numel() and
-                # bias.numel().
-                # We also store the sizes and numbers of derivatives in `ctx`,
-                # which allows us to retrieve this information during the
-                # backwards pass.
-                n_dervs = 0
+            with torch.no_grad():
+                total_dervs = 0
+                if ctx.needs_input_grad[0]:
+                    fwdinput = fwdinput_dual.x
+                    n_batch = fwdinput.size(0)
+                    fwdinput_d = fwdinput_dual.xd
+                    ret_d_in = ForwardUtilities.propagate(
+                                   fwdinput, fwdinput_d, weight, None, bias, None,
+                                   torch.nn.functional.linear, None,
+                                   *args, **kwargs)
+                    ret_d_in = truebatch2outer(ret_d_in, n_batch)
+                    total_dervs += fwdinput_dual.size(0)
+                else:
+                    fwdinput = fwdinput_dual
+                    n_batch = fwdinput.size(0)
+                    ret_d_in = None
+                out_channels = weight.size(0)
+
                 ctx.derv_dims = {}
+                ctx.derv_dims['layer'] = 0
                 if ctx.needs_input_grad[1]:
                     n_dervs_w = weight.numel()
-                    n_dervs += n_dervs_w
+                    ctx.derv_dims['layer'] += n_dervs_w
                     ctx.derv_dims['weight'] = [n_dervs_w, weight.shape]
+                    weight_d = ForwardUtilities.seed_cartesian(n_dervs_w, weight.shape)
+                    ret_d_w = ForwardUtilities.propagate(
+                                   fwdinput, None, weight, weight_d, bias, None,
+                                   torch.nn.functional.linear, None,
+                                   *args, **kwargs)
+                    ret_d_w = truebatch2outer(ret_d_w, n_batch)
                 if bias is not None and ctx.needs_input_grad[2]:
                     n_dervs_b = bias.numel()
-                    n_dervs += n_dervs_b
+                    ctx.derv_dims['layer'] += n_dervs_b
                     ctx.derv_dims['bias'] = [n_dervs_b, bias.shape]
-                ctx.derv_dims['layer'] = n_dervs
-                # Seeding. Make sure that either weight_d or bias_d (not both)
-                # has exactly one entry "1.0", and all other entries "0.0", for
-                # each derivative input channel.
-                out_channels = weight.size(0)
-                weight_d = torch.nn.Parameter(torch.zeros(n_dervs*out_channels, *weight.shape[1:]), requires_grad=False)
-                bias_d = torch.nn.Parameter(torch.zeros(n_dervs*out_channels), requires_grad=False)
-                if ctx.needs_input_grad[1]:
-                    slc = [slice(None)] * len(weight_d.shape)
-                    slc[0] = slice(0, n_dervs_w*out_channels)
-                    weight_d[slc].flatten()[0::n_dervs_w+1] = 1
-                if bias is not None and ctx.needs_input_grad[2]:
-                    bias_d[-n_dervs_b*out_channels::n_dervs_b+1] = 1
-                # Derivative Propagation
-                ret_d1 = torch.nn.functional.linear(fwdinput, weight_d, bias_d, *args, **kwargs)
-                ret_d1 = channel2batch(ret_d1, out_channels)
-                if(ret_d0 != None):
-                    n_batch = fwdinput.size(0)
-                    ret_d0 = truebatch2outer(ret_d0, n_batch)
-                    ret_d1 = truebatch2outer(ret_d1, n_batch)
-                    ret_d = torch.cat([ret_d0, ret_d1], dim=1)
-                    ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
-                else:
-                    ret_d = ret_d1
+                    bias_d = ForwardUtilities.seed_cartesian(n_dervs_b, bias.shape)
+                    ret_d_b = ForwardUtilities.propagate(
+                                   fwdinput, None, weight, None, bias, bias_d,
+                                   torch.nn.functional.linear, reshape_biasd,
+                                   *args, **kwargs)
+                    ret_d_b = truebatch2outer(ret_d_b, n_batch)
+                total_dervs += ctx.derv_dims['layer']
+
+                ret_d = torch.cat([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None], dim=1)
+                ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
                 # Primal Evaluation: $w*x+b$
                 ###############################################################
                 ret = torch.nn.functional.linear(fwdinput, weight, bias, *args, **kwargs)
 
-            ret_dual = DualTensor(torch.zeros(n_dervs+n_dervs_incoming), ret, ret_d)
+            ret_dual = DualTensor(torch.zeros(total_dervs), ret, ret_d)
             return ret_dual
 
         @staticmethod
@@ -191,61 +220,27 @@ class Linear(torch.nn.Module):
         return self.__Func__.apply(x, self.weight, self.bias, self.args, self.kwargs)
 
 class Conv2d(torch.nn.Module):
-    @staticmethod
-    def forward_propagate(img, img_d, weight, weight_d, bias, bias_d, *args, **kwargs):
-        def conv_out_shape(img_size, kernel_size=1, stride=1, padding=0, dilation=1, *args, **kwargs):
-            from math import floor
-            h = floor(((img_size[0]+(2*padding)-(dilation*(kernel_size[0]-1))-1)/stride)+1)
-            w = floor(((img_size[1]+(2*padding)-(dilation*(kernel_size[1]-1))-1)/stride)+1)
-            return h, w
-
-        n_batch = img.size(0)
-        out_channels = weight.size(0)
-    
-        ###############################################################
-        # Forward-propagation of weight/bias derivatives:
-        # $\dot{w}*x$ and $\dot{b}$
-        ###############################################################
-        ret_d0 = None
-        if(weight_d != None):
-            ret_d0 = torch.nn.functional.conv2d(img, weight_d, bias_d, *args, **kwargs)
-            ret_d0 = channel2batch(ret_d0, out_channels)
-        elif(bias_d != None):
-            img_w, img_h = conv_out_shape(img.shape[2:4], weight.shape[2:4], *args, **kwargs)
-            ret_d0 = bias_d.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(n_batch, -1, img_w, img_h)
-            ret_d0 = channel2batch(ret_d0.contiguous(), out_channels)
-    
-        ###############################################################
-        # Forward-propagation of img derivatives: $w*\dot{x}$
-        ###############################################################
-        if img_d != None:
-            # In this case, the incoming tensor is already a DualTensor,
-            # which means we are probably not the first layer in this
-            # network. We extract the primal and derivative inputs.
-            ret_d1 = torch.nn.functional.conv2d(img_d, weight, None, *args, **kwargs)
-    
-        ###############################################################
-        # Assembly of derivative tensor
-        ###############################################################
-            if ret_d0 == None:
-                ret_d = ret_d1
-            else:
-                ret_d = ret_d0 + ret_d1
-        else:
-            ret_d = ret_d0
-        return ret_d
-
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput_dual, weight, bias, args, kwargs):
+            def reshape_biasd(bias_d, img, weight, stride=1, padding=0, dilation=1,
+                                 *args, **kwargs):
+                from math import floor
+                h = floor(((img.size(2)+(2*padding)-(dilation*(weight.size(2)-1))-1)/stride)+1)
+                w = floor(((img.size(3)+(2*padding)-(dilation*(weight.size(3)-1))-1)/stride)+1)
+                n_batch = img.size(0)
+                return bias_d.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(n_batch, -1, w, h)
+
             with torch.no_grad():
                 total_dervs = 0
                 if ctx.needs_input_grad[0]:
                     fwdinput = fwdinput_dual.x
                     n_batch = fwdinput.size(0)
                     fwdinput_d = fwdinput_dual.xd
-                    ret_d_in = Conv2d.forward_propagate(fwdinput, fwdinput_d, weight, None, bias, None,
-                                                 *args, **kwargs)
+                    ret_d_in = ForwardUtilities.propagate(
+                                   fwdinput, fwdinput_d, weight, None, bias, None,
+                                   torch.nn.functional.conv2d, None,
+                                   *args, **kwargs)
                     ret_d_in = truebatch2outer(ret_d_in, n_batch)
                     total_dervs += fwdinput_dual.size(0)
                 else:
@@ -260,27 +255,24 @@ class Conv2d(torch.nn.Module):
                     n_dervs_w = weight.numel()
                     ctx.derv_dims['layer'] += n_dervs_w
                     ctx.derv_dims['weight'] = [n_dervs_w, weight.shape]
-                    weight_d = torch.nn.Parameter(
-                                   torch.zeros(n_dervs_w*out_channels, *weight.shape[1:]),
-                                   requires_grad=False)
-                    weight_d.flatten()[0::n_dervs_w+1] = 1
-                    ret_d_w = Conv2d.forward_propagate(fwdinput, None, weight, weight_d, bias, None,
-                                                *args, **kwargs)
+                    weight_d = ForwardUtilities.seed_cartesian(n_dervs_w, weight.shape)
+                    ret_d_w = ForwardUtilities.propagate(
+                                   fwdinput, None, weight, weight_d, bias, None,
+                                   torch.nn.functional.conv2d, None,
+                                   *args, **kwargs)
                     ret_d_w = truebatch2outer(ret_d_w, n_batch)
                 if bias is not None and ctx.needs_input_grad[2]:
                     n_dervs_b = bias.numel()
                     ctx.derv_dims['layer'] += n_dervs_b
                     ctx.derv_dims['bias'] = [n_dervs_b, bias.shape]
-                    bias_d = torch.nn.Parameter(
-                                 torch.zeros(n_dervs_b*out_channels),
-                                 requires_grad=False)
-                    bias_d[0::n_dervs_b+1] = 1
-                    ret_d_b = Conv2d.forward_propagate(fwdinput, None, weight, None, bias, bias_d,
-                                                *args, **kwargs)
+                    bias_d = ForwardUtilities.seed_cartesian(n_dervs_b, bias.shape)
+                    ret_d_b = ForwardUtilities.propagate(
+                                   fwdinput, None, weight, None, bias, bias_d,
+                                   torch.nn.functional.conv2d, reshape_biasd,
+                                   *args, **kwargs)
                     ret_d_b = truebatch2outer(ret_d_b, n_batch)
                 total_dervs += ctx.derv_dims['layer']
 
-                # Derivative Propagation
                 ret_d = torch.cat([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None], dim=1)
                 ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
