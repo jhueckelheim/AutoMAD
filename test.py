@@ -1,5 +1,6 @@
 import automad
 import torch
+import numpy as np
 
 class Net_AutoMAD(torch.nn.Module):
     def __init__(self):
@@ -8,7 +9,8 @@ class Net_AutoMAD(torch.nn.Module):
         #self.tanh = automad.Tanh()
         self.relu = automad.ReLU()
         self.conv2 = automad.Conv2d(4, 5, 3)
-        self.avg = automad.AvgPool2d(2)
+        #self.avg = automad.AvgPool2d(2)
+        self.max = automad.MaxPool2d(2)
         self.linear = automad.Linear(5*6*6, 7)
         self.f2r = automad.Fwd2Rev()
 
@@ -17,8 +19,9 @@ class Net_AutoMAD(torch.nn.Module):
         #x = self.tanh(x)
         x = self.relu(x)
         x = self.conv2(x)
-        x = self.avg(x)
-        print(x.shape)
+        #x = self.avg(x)
+        x = self.max(x)
+        #print(x.shape)
         x = automad.flatten(x, 1)
         x = self.linear(x)
         x = self.f2r(x)
@@ -32,7 +35,8 @@ class Net_AutoGrad(torch.nn.Module):
         #self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.conv2 = torch.nn.Conv2d(4, 5, 3)
-        self.avg = torch.nn.AvgPool2d(2)
+        #self.avg = torch.nn.AvgPool2d(2)
+        self.max = torch.nn.MaxPool2d(2)
         self.linear = torch.nn.Linear(5*6*6, 7)
 
     def forward(self, x):
@@ -40,11 +44,46 @@ class Net_AutoGrad(torch.nn.Module):
         #x = self.tanh(x)
         x = self.relu(x)
         x = self.conv2(x)
-        x = self.avg(x)
+        x = self.max(x)
         x = torch.flatten(x, 1)
         x = self.linear(x)
         return x
 
+def retrieve_elements_from_indices(tensor, indices):
+    flattened_tensor = tensor.flatten(start_dim=2)
+    output = flattened_tensor.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
+    return output
+
+# pool of square window of size=3, stride=2
+#m = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
+# pool of non-square window
+#m = torch.nn.MaxPool2d((3, 2), stride=(2, 1), return_indices=True)
+#input = torch.randn(1, 2, 4, 4)
+#output, i = m(input)
+#print('Test for maxpool2d')
+#print('output size:' + str(output.size()))
+#print(output)
+#print('i size:' + str(i.size()))
+#print(i)
+#print('Test for retrieving indices')
+#output2 = retrieve_elements_from_indices(output, i)
+#print(output2)
+'''
+https://discuss.pytorch.org/t/maxpool2d-indexing-order/8281
+https://discuss.pytorch.org/t/pooling-using-idices-from-another-max-pooling/37209/4
+https://discuss.pytorch.org/t/fill-value-to-matrix-based-on-index/34698
+'''
+#print('Test zero tensor filled based on indices')
+#a = torch.zeros(output.size())
+#print(a.size())
+#print(a)
+#print(a.size(0))
+#a[torch.arange(a.size(0)).unsqueeze(1), 1] = 1
+#print(a)
+
+#print('Test to numpy unravel')
+#indx = np.unravel_index(torch.argmax(output), output.shape())
+#print(indx)
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
 tgt = torch.randn(n_batches, 7)

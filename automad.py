@@ -630,3 +630,73 @@ class Rev2Fwd(torch.nn.Module):
 
     def backward(self, x):
         return self.__Func__.apply(x)
+
+class MaxPool2d(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual, kernel_size, args, kwargs):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    # In this case, the incoming tensor is already a DualTensor,
+                    # which means we are probably not the first layer in this
+                    # network. We extract the primal and derivative inputs.
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    # In this case, the incoming tensor is just a plain tensor,
+                    # so we are probably the first (differentiated) layer. There
+                    # is no incoming derivative for us to forward-propagate.
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+
+                ###############################################################
+                # Primal Evaluation
+                ###############################################################
+                ret, indices = torch.nn.functional.max_pool2d(fwdinput,
+                                                     kernel_size=kernel_size,
+                                                     *args, **kwargs,
+                                                     return_indices=True)
+
+                ###############################################################
+                # Forward-propagation of incoming derivatives
+                ###############################################################
+                if ctx.needs_input_grad[0]:
+                    '''
+                    The derivative of the max pooling layer should be 1.0
+                    for the element that got selected (basically it's the 
+                    same as an assignment), and 0.0 everywhere else 
+                    (because those values had no influence, thus the 
+                    derivative wrt. those values is zero)
+
+                    Hence the function that tells you the indices of selected
+                    values is going to give you more or less what you need.
+
+                    Source:
+                    https://pytorch.org/docs/stable/_modules/torch/nn/modules/pooling.html#MaxPool2d
+                    '''
+                    # Retrieve corresponding elements from fwdinput based on ret_d indices
+                    fwdinput_d_flat = fwdinput_d.flatten(start_dim=2)
+                    ret_d = fwdinput_d_flat.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
+                    #ret_d = fwdinput_d[indices]
+                    print('Size of ret_d:')
+                    print(ret_d.size())
+
+                else:
+                    ret_d = None
+
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output, None, None, None
+
+    def __init__(self, kernel_size, *args, **kwargs):
+        super(MaxPool2d, self).__init__()
+        self.kernel_size = kernel_size
+        self.args = args
+        self.kwargs = kwargs
+
+    def forward(self, x):
+        return self.__Func__.apply(x, self.kernel_size, self.args, self.kwargs)
