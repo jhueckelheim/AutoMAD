@@ -676,9 +676,31 @@ class MaxPool2d(torch.nn.Module):
                     https://pytorch.org/docs/stable/_modules/torch/nn/modules/pooling.html#MaxPool2d
                     '''
                     # Retrieve corresponding elements from fwdinput based on ret_d indices
-                    fwdinput_d_flat = fwdinput_d.flatten(start_dim=2)
-                    ret_d = fwdinput_d_flat.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
-                    #ret_d = fwdinput_d[indices]
+                    print('fwdinput size:')
+                    print(fwdinput.size())
+                    print('fwdinput_d size:')
+                    print(fwdinput_d.size())
+                    print('ret size:')
+                    print(ret.size())
+                    print('indices size:')
+                    print(indices.size())
+
+                    #ret_d = fwdinput_d[torch.arange(fwdinput_d.size(0)).unsqueeze(1), indices]
+                    #ret_d = torch.index_select(fwdinput_d, 0, indices.flatten())
+
+                    #fwdinput_d_flat = fwdinput_d.flatten(start_dim=1)
+                    #ret_d = fwdinput_d_flat.gather(dim=0, index=indices.flatten(start_dim=1)).view_as(indices)
+
+                    #temp = torch.zeros(fwdinput_d.size())
+                    #ret_d = temp.scatter(dim=0, index=indices, src=fwdinput_d)
+
+                    #ret_d = torch.nn.functional.max_unpool2d(kernel_size=kernel_size,)
+
+                    #ret_d = fwdinput_d[indices,:]
+
+                    #ret_d = torch.gather(torch.flatten(fwdinput_d, 2), 2, torch.flatten(indices, 2)).view()
+
+                    ret_d = torch.nn.functional.max_pool2d(fwdinput_d, kernel_size=kernel_size, *args, **kwargs)
                     print('Size of ret_d:')
                     print(ret_d.size())
 

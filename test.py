@@ -44,6 +44,7 @@ class Net_AutoGrad(torch.nn.Module):
         #x = self.tanh(x)
         x = self.relu(x)
         x = self.conv2(x)
+        #x = self.avg(x)
         x = self.max(x)
         x = torch.flatten(x, 1)
         x = self.linear(x)
