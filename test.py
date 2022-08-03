@@ -14,6 +14,7 @@ class Net_AutoMAD(torch.nn.Module):
         self.linear = automad.Linear(5*6*6, 7)
         self.f2r = automad.Fwd2Rev()
 
+
     def forward(self, x):
         x = self.conv1(x)
         #x = self.tanh(x)
@@ -55,36 +56,6 @@ def retrieve_elements_from_indices(tensor, indices):
     output = flattened_tensor.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
     return output
 
-# pool of square window of size=3, stride=2
-#m = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-# pool of non-square window
-#m = torch.nn.MaxPool2d((3, 2), stride=(2, 1), return_indices=True)
-#input = torch.randn(1, 2, 4, 4)
-#output, i = m(input)
-#print('Test for maxpool2d')
-#print('output size:' + str(output.size()))
-#print(output)
-#print('i size:' + str(i.size()))
-#print(i)
-#print('Test for retrieving indices')
-#output2 = retrieve_elements_from_indices(output, i)
-#print(output2)
-'''
-https://discuss.pytorch.org/t/maxpool2d-indexing-order/8281
-https://discuss.pytorch.org/t/pooling-using-idices-from-another-max-pooling/37209/4
-https://discuss.pytorch.org/t/fill-value-to-matrix-based-on-index/34698
-'''
-#print('Test zero tensor filled based on indices')
-#a = torch.zeros(output.size())
-#print(a.size())
-#print(a)
-#print(a.size(0))
-#a[torch.arange(a.size(0)).unsqueeze(1), 1] = 1
-#print(a)
-
-#print('Test to numpy unravel')
-#indx = np.unravel_index(torch.argmax(output), output.shape())
-#print(indx)
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
 tgt = torch.randn(n_batches, 7)
@@ -128,14 +99,6 @@ def test_forward_reverse():
     assert torch.equal(netrev.conv1.bias.grad, netfwd.conv1.bias.grad) is True
     assert torch.equal(netrev.conv2.weight.grad, netfwd.conv2.weight.grad) is True
     assert torch.equal(netrev.conv2.bias.grad, netfwd.conv2.bias.grad) is True
-    '''
-    Is the where condition correct even if some points are satisfied vs not.
-    Check that both branches are relu are hitting.
-    => inputs to relu should have some positive and some negative
-        (inputs are from tanh layer)
-    => outputs are either 0 or 1, at least one output of both
-    If this doesn't work, could swap around tanh and relu, and use an image to check.
-    '''
 
 if __name__ == '__main__':
     test_forward_reverse()
