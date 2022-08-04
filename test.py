@@ -1,5 +1,6 @@
 import automad
 import torch
+import numpy as np
 
 class Net_AutoMAD(torch.nn.Module):
     def __init__(self):
@@ -8,17 +9,20 @@ class Net_AutoMAD(torch.nn.Module):
         #self.tanh = automad.Tanh()
         self.relu = automad.ReLU()
         self.conv2 = automad.Conv2d(4, 5, 3)
-        self.avg = automad.AvgPool2d(2)
+        #self.avg = automad.AvgPool2d(2)
+        self.max = automad.MaxPool2d(2)
         self.linear = automad.Linear(5*6*6, 7)
         self.f2r = automad.Fwd2Rev()
+
 
     def forward(self, x):
         x = self.conv1(x)
         #x = self.tanh(x)
         x = self.relu(x)
         x = self.conv2(x)
-        x = self.avg(x)
-        print(x.shape)
+        #x = self.avg(x)
+        x = self.max(x)
+        #print(x.shape)
         x = automad.flatten(x, 1)
         x = self.linear(x)
         x = self.f2r(x)
@@ -32,7 +36,8 @@ class Net_AutoGrad(torch.nn.Module):
         #self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.conv2 = torch.nn.Conv2d(4, 5, 3)
-        self.avg = torch.nn.AvgPool2d(2)
+        #self.avg = torch.nn.AvgPool2d(2)
+        self.max = torch.nn.MaxPool2d(2)
         self.linear = torch.nn.Linear(5*6*6, 7)
 
     def forward(self, x):
@@ -40,10 +45,16 @@ class Net_AutoGrad(torch.nn.Module):
         #x = self.tanh(x)
         x = self.relu(x)
         x = self.conv2(x)
-        x = self.avg(x)
+        #x = self.avg(x)
+        x = self.max(x)
         x = torch.flatten(x, 1)
         x = self.linear(x)
         return x
+
+def retrieve_elements_from_indices(tensor, indices):
+    flattened_tensor = tensor.flatten(start_dim=2)
+    output = flattened_tensor.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
+    return output
 
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
@@ -88,14 +99,6 @@ def test_forward_reverse():
     assert torch.equal(netrev.conv1.bias.grad, netfwd.conv1.bias.grad) is True
     assert torch.equal(netrev.conv2.weight.grad, netfwd.conv2.weight.grad) is True
     assert torch.equal(netrev.conv2.bias.grad, netfwd.conv2.bias.grad) is True
-    '''
-    Is the where condition correct even if some points are satisfied vs not.
-    Check that both branches are relu are hitting.
-    => inputs to relu should have some positive and some negative
-        (inputs are from tanh layer)
-    => outputs are either 0 or 1, at least one output of both
-    If this doesn't work, could swap around tanh and relu, and use an image to check.
-    '''
 
 if __name__ == '__main__':
     test_forward_reverse()

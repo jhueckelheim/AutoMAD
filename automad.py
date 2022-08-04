@@ -1,5 +1,8 @@
 import torch
 
+import automad
+
+
 def channel2batch(x, out_channels=1):
     # reinterpret a [x,y*c,:,:] tensor as a [x*c,y,:,:] tensor
     return x.view(x.size(0)*x.size(1)//out_channels, out_channels, *x.shape[2:])
@@ -628,5 +631,120 @@ class Rev2Fwd(torch.nn.Module):
     def __init__(self):
         super(Rev2Fwd, self).__init__()
 
-    def backward(self, x):
+    def forward(self, x): #inference step, probably also want a backward that will take care of gradients
         return self.__Func__.apply(x)
+
+class MaxPool2d(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual, kernel_size, args, kwargs):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    # In this case, the incoming tensor is already a DualTensor,
+                    # which means we are probably not the first layer in this
+                    # network. We extract the primal and derivative inputs.
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    # In this case, the incoming tensor is just a plain tensor,
+                    # so we are probably the first (differentiated) layer. There
+                    # is no incoming derivative for us to forward-propagate.
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+
+                ###############################################################
+                # Primal Evaluation
+                ###############################################################
+                ret, indices = torch.nn.functional.max_pool2d(fwdinput,
+                                                     kernel_size=kernel_size,
+                                                     *args, **kwargs,
+                                                     return_indices=True)
+                indices_repeated = indices.repeat(297, 1, 1, 1)
+                ###############################################################
+                # Forward-propagation of incoming derivatives
+                ###############################################################
+                if ctx.needs_input_grad[0]:
+                    '''
+                    The derivative of the max pooling layer should be 1.0
+                    for the element that got selected (basically it's the 
+                    same as an assignment), and 0.0 everywhere else 
+                    (because those values had no influence, thus the 
+                    derivative wrt. those values is zero)
+
+                    Hence the function that tells you the indices of selected
+                    values is going to give you more or less what you need.
+
+                    Source:
+                    https://pytorch.org/docs/stable/_modules/torch/nn/modules/pooling.html#MaxPool2d
+                    https://discuss.pytorch.org/t/maxpool2d-indexing-order/8281
+                    *** https://discuss.pytorch.org/t/pooling-using-idices-from-another-max-pooling/37209/4
+                    https://discuss.pytorch.org/t/fill-value-to-matrix-based-on-index/34698
+                    
+                    ***I think this is the closest to what Jan wants, but if you notice the shape of data1 and data2
+                    are equal, which is not the case in this situation. I believe this plays into the requirement of 
+                    the gather function needing the input and index to be of the same size.
+                    fwdinput size:   torch.Size([2, 5, 12, 12])
+                    fwdinput_d size: torch.Size([594, 5, 12, 12])
+                    ret size:        torch.Size([2, 5, 6, 6])
+                    indices size:    torch.Size([2, 5, 6, 6])
+                    Size of ret_d:   torch.Size([594, 5, 6, 6])
+                    
+                    Leading dimension is 2 things conflated into one, mini batch and then the number of directional
+                    derivatives so far, the jacobian size. 594 /2 = 297
+                    You can untangle this by calling automad.truebatch2outer() function
+                    You would pass fwdinput_d into automad.truebatch2outer() as first argument, and second argument
+                    would be 2 since that's the mini batch. Nbatch.
+                    The result of this would be a tensor that would be [2, 297, 5, 12, 12] 4D tensor
+                    Now all the dimensions match except there is an additional dimension
+                    Use the indices tell you how to take care of dimension 0, 2, 3, 4
+                    In each of those slices of 297 you want to apply the indices.
+                    
+                    You want the res[:, 0, :, :, :] = input[indices, 0, indices, indices, indices]
+                    You want the res[:, 1, :, :, :] = input[indices, 1, indices, indices, indices]
+                    ...
+                    You want the res[:, 296, :, :, :] = input[indices, 296, indices, indices, indices]
+                    
+                    Unsqueeze indices to have singleton dimension in that place
+                    Maybe have to use expand function, or repeat function
+                    
+                    Make a toy problem, [3,3,3] tensor size, have entries be something from 1-27
+                    So that you can visually see what's going on
+                    Indices array could be 2D thing, select only 1 or 2 from first and 1 or 2 from third, but middle
+                    dimension is wherein the repeated behavior is occurring across all entries.
+                    Unsqueeze result, what does it look like? Or you know use gather and look at the result
+                    Exploratory untangling with toy problem instead of fumbling with autoMAD
+                    '''
+
+                    # Retrieve corresponding elements from fwdinput based on ret_d indices
+                    print('###################')
+                    print('Print statements from within MaxPool2D')
+                    print('fwdinput size: ' + str(fwdinput.size()))
+                    print('fwdinput_d size: ' + str(fwdinput_d.size()))
+                    print('ret size: ' + str(ret.size()))
+                    print('indices size: ' + str(indices.size()))
+                    print('indices_repeated size: ' + str(indices_repeated.size()))
+
+                    fwdinput_d_flat = fwdinput_d.flatten(start_dim=0)
+                    ret_d = fwdinput_d_flat.gather(dim=0, index=indices_repeated.flatten(start_dim=0)).view_as(indices_repeated)
+                    print('Size of ret_d:' + str(ret_d.size()))
+                    print('###################')
+
+                else:
+                    ret_d = None
+
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output, None, None, None
+
+    def __init__(self, kernel_size, *args, **kwargs):
+        super(MaxPool2d, self).__init__()
+        self.kernel_size = kernel_size
+        self.args = args
+        self.kwargs = kwargs
+
+    def forward(self, x):
+        return self.__Func__.apply(x, self.kernel_size, self.args, self.kwargs)
