@@ -1,8 +1,5 @@
 import torch
 
-import automad
-
-
 def channel2batch(x, out_channels=1):
     # reinterpret a [x,y*c,:,:] tensor as a [x*c,y,:,:] tensor
     return x.view(x.size(0)*x.size(1)//out_channels, out_channels, *x.shape[2:])
@@ -500,34 +497,55 @@ class Rev2Fwd(torch.nn.Module):
     def forward(self, x):
         return self.__Func__.apply(x)
 
-class ReLU(torch.nn.Module):
-    '''
-    TODO: convert torch's ReLU activation function into AutoMAD
-    Source: https://pytorch.org/docs/stable/_modules/torch/nn/modules/activation.html#ReLU
-    Applies the rectified linear unit function element-wise:
-    :math:`\text{ReLU}(x) = (x)^+ = \max(0, x)`
-    Args:
-        inplace: can optionally do the operation in-place. Default: ``False``
-    Shape:
-        - Input: :math:`(*)`, where :math:`*` means any number of dimensions.
-        - Output: :math:`(*)`, same shape as the input.
-    .. image:: ../scripts/activation_images/ReLU.png
-    Examples::
-        >>> m = torch.nn.ReLU()
-        >>> input = torch.randn(2)
-        >>> output = m(input)
-      An implementation of CReLU - https://arxiv.org/abs/1603.05201
-        >>> m = torch.nn.ReLU()
-        >>> input = torch.randn(2).unsqueeze(0)
-        >>> output = torch.cat((m(input),m(-input)))
-    '''
+class Dropout(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual, p):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+                #######################################
+                # Primal Evaluation: $ret = dropout(x)$
+                #######################################
+                ret = torch.nn.functional.dropout(fwdinput, p=p)
 
+                ##############################################
+                # Forward-propagation of incoming derivatives:
+                # $\dot{ret} = 1/(1-p) if chosen$
+                # $\dot{ret} = 0       else$
+                ##############################################
+                if ctx.needs_input_grad[0]:
+                    n_batch = fwdinput.size(0)
+                    fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
+                    ret_p = ret.unsqueeze(1)
+                    ret_d = torch.where(ret==fwdinput, 1.0/(1.0-p), 0.0)
+                    ret_d = ret_d.view(ret_d.size(0) * ret_d.size(1), *ret_d.shape[2:])
+                    ret_d = ret_d * fwdinput_d
+                else:
+                    ret_d = None
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output
+
+    def __init__(self):
+        super(Dropout, self).__init__()
+
+    def forward(self, x, p=0.5):
+        return self.__Func__.apply(x, p)
+
+class ReLU(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
         def forward(ctx, fwdinput_dual):
             with torch.no_grad():
-                # print('Min Value of ctx:' + str(torch.min(ctx)))
-                # print('Max Value of ctx:' + str(torch.max(ctx)))
                 if ctx.needs_input_grad[0]:
                     fwdinput = fwdinput_dual.x
                     fwdinput_d = fwdinput_dual.xd
@@ -536,57 +554,29 @@ class ReLU(torch.nn.Module):
                     fwdinput = fwdinput_dual
                     n_dervs_incoming = 0
                 ####################################
-                # Primal Evaluation: $ret = tanh(x)$
+                # Primal Evaluation: $ret = relu(x)$
                 ####################################
-                print('Min Value of fwdinput_dual:' + str(torch.min(fwdinput_dual)))
-                print('Max Value of fwdinput_dual:' + str(torch.max(fwdinput_dual)))
                 ret = torch.nn.functional.relu(fwdinput)
 
                 ##############################################
                 # Forward-propagation of incoming derivatives:
                 # $\dot{ret} = 0 if x < 0$
                 # $\dot{ret} = 1 if x > 0$
-                # $\dot{ret} = 0 if x = 0$ so that matrix is more sparse, see references
-                # https://stats.stackexchange.com/questions/333394/what-is-the-derivative-of-the-relu-activation-function
-                # https://www.quora.com/How-do-we-compute-the-gradient-of-a-ReLU-for-backpropagation
+                # $\dot{ret} = 0 if x = 0$
                 ##############################################
                 if ctx.needs_input_grad[0]:
                     n_batch = fwdinput.size(0)
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
                     ret_p = ret.unsqueeze(1)
-                    # print('fwdinput_d:')
-                    # print(fwdinput_d.size())
-                    # print('ret_p:')
-                    # print(ret_p.size())
-                    # ret_p: torch.Size([2, 1, 4, 14, 14]).
-                    # Check if any of the values are greater than zero, or all?
-                    # print(torch.all(fwdinput_d > 0))
-                    ret_d = torch.where(fwdinput_d > 0, 1.0, 0.0)
-                    print('ret_d size:')
-                    print(ret_d.size())
-                    '''
-                    if torch.all(fwdinput_d > 0):
-                        print('Went into first boolean check')
-                        ret_d = torch.full(ret_p.size(), 1.0) # should have used fwdinput_d.size()
-                    else:
-                        print('Went into second boolean check')
-                        print('ret_p size:')
-                        print(ret_p.size())
-                        ret_d = torch.full(ret_p.size(), 0.0)
-                    '''
-
+                    ret_d = torch.where(fwdinput > 0, fwdinput_d, 0.0)
                     ret_d = ret_d.view(ret_d.size(0) * ret_d.size(1), *ret_d.shape[2:])
                 else:
                     ret_d = None
             ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
-            print('Min Value of ret_dual:' + str(torch.min(ret_dual)))
-            print('Max Value of ret_dual:' + str(torch.max(ret_dual)))
             return ret_dual
 
         @staticmethod
         def backward(ctx, grad_output):
-            print('grad_output from backward:')
-            print(grad_output.size())
             return grad_output
 
     def __init__(self):
