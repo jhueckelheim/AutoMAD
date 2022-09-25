@@ -11,10 +11,10 @@ def truebatch2outer(x, n_batch):
 def flatten(x, start_dim=0, end_dim=-1):
     if(start_dim < 1):
         raise ValueError("flatten with start dimension <1 is not supported by automad")
-    n_batch = x.x.size(0)
-    x.x = torch.flatten(x.x, start_dim, end_dim)
-    x.xd = torch.flatten(x.xd, start_dim, end_dim)
-    return x
+    ret = DualTensor(x, x.x, x.xd)
+    ret.x = torch.flatten(ret.x, start_dim, end_dim)
+    ret.xd = torch.flatten(ret.xd, start_dim, end_dim)
+    return ret
 
 class DualTensor(torch.Tensor):
     '''
@@ -115,23 +115,29 @@ class ForwardUtilities:
         return ret_d
 
     @staticmethod
-    def seed_cartesian(n_dervs, dims):
+    def seed_cartesian(dims):
+        n_dervs = dims.numel()
         seed = torch.nn.Parameter(
                    torch.zeros(n_dervs*dims[0], *dims[1:]),
                    requires_grad=False)
         seed.flatten()[0::n_dervs+1] = 1
-        return seed
+        return n_dervs, seed
+
+    @staticmethod
+    def seed_randomized(dims):
+        n_dervs = 1
+        seed = torch.rand(dims, requires_grad=False)
+        return n_dervs, seed
 
 class Linear(torch.nn.Module):
     class __Func__(torch.autograd.Function):
-        def forward(ctx, fwdinput_dual, weight, bias, args, kwargs):
+        def forward(ctx, fwdinput_dual, weight, bias, seedfunc, accmfunc, mode, args, kwargs):
             def reshape_biasd(bias_d, img, *args, **kwargs):
                 bias_d_shape = bias_d.shape
                 n_batch = img.size(0)
                 return bias_d.unsqueeze(0).expand(n_batch, *bias_d_shape)
 
             with torch.no_grad():
-                total_dervs = 0
                 if ctx.needs_input_grad[0]:
                     fwdinput = fwdinput_dual.x
                     n_batch = fwdinput.size(0)
@@ -141,38 +147,41 @@ class Linear(torch.nn.Module):
                                    torch.nn.functional.linear, None,
                                    *args, **kwargs)
                     ret_d_in = truebatch2outer(ret_d_in, n_batch)
-                    total_dervs += fwdinput_dual.size(0)
                 else:
                     fwdinput = fwdinput_dual
                     n_batch = fwdinput.size(0)
                     ret_d_in = None
                 out_channels = weight.size(0)
 
+                ctx.mode = mode
                 ctx.derv_dims = {}
                 ctx.derv_dims['layer'] = 0
                 if ctx.needs_input_grad[1]:
-                    n_dervs_w = weight.numel()
+                    n_dervs_w, weight_d = seedfunc(weight.shape)
+                    ctx.weight_d = weight_d
                     ctx.derv_dims['layer'] += n_dervs_w
                     ctx.derv_dims['weight'] = [n_dervs_w, weight.shape]
-                    weight_d = ForwardUtilities.seed_cartesian(n_dervs_w, weight.shape)
                     ret_d_w = ForwardUtilities.propagate(
                                    fwdinput, None, weight, weight_d, bias, None,
                                    torch.nn.functional.linear, None,
                                    *args, **kwargs)
                     ret_d_w = truebatch2outer(ret_d_w, n_batch)
                 if bias is not None and ctx.needs_input_grad[2]:
-                    n_dervs_b = bias.numel()
+                    n_dervs_b, bias_d = seedfunc(bias.shape)
+                    ctx.bias_d = bias_d
                     ctx.derv_dims['layer'] += n_dervs_b
                     ctx.derv_dims['bias'] = [n_dervs_b, bias.shape]
-                    bias_d = ForwardUtilities.seed_cartesian(n_dervs_b, bias.shape)
                     ret_d_b = ForwardUtilities.propagate(
                                    fwdinput, None, weight, None, bias, bias_d,
                                    torch.nn.functional.linear, reshape_biasd,
                                    *args, **kwargs)
                     ret_d_b = truebatch2outer(ret_d_b, n_batch)
-                total_dervs += ctx.derv_dims['layer']
 
-                ret_d = torch.cat([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None], dim=1)
+                ret_d = accmfunc([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None])
+                if(mode == "jacobian"):
+                    total_dervs = ret_d.size(1)
+                else:
+                    total_dervs = ret_d.size(1) // bias.size(0)
                 ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
@@ -185,26 +194,37 @@ class Linear(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
-            # grad_input is the pass-through of gradient information for layers
-            # that happened before us in the forward pass (and will happen after
-            # this in the reverse pass).
-            # The gradient tensor is organized such that the last directional
-            # derivatives belong to the current layer. Everything except those
-            # last directions is passed into grad_input.
-            grad_input = grad_output[:-ctx.derv_dims['layer']]
-            # the rest is gradient info for the current layer. The weights are
-            # first, the bias is last.
-            if(ctx.needs_input_grad[1]):
-                grad_weight = grad_output[-ctx.derv_dims['layer']:-ctx.derv_dims['layer']+ctx.derv_dims['weight'][0]].view(ctx.derv_dims['weight'][1])
+            if ctx.mode != "jacobian":
+                grad_input = grad_output
+                if(ctx.needs_input_grad[1]):
+                    grad_weight = grad_input * ctx.weight_d
+                else:
+                    grad_weight = None
+                if(ctx.needs_input_grad[2]):
+                    grad_bias = grad_input * ctx.bias_d
+                else:
+                    grad_bias = None
             else:
-                grad_weight = None
-            if(ctx.needs_input_grad[2]):
-                grad_bias = grad_output[-ctx.derv_dims['bias'][0]:].view(ctx.derv_dims['bias'][1])
-            else:
-                grad_bias = None
-            return grad_input, grad_weight, grad_bias, None, None
+                # grad_input is the pass-through of gradient information for layers
+                # that happened before us in the forward pass (and will happen after
+                # this in the reverse pass).
+                # The gradient tensor is organized such that the last directional
+                # derivatives belong to the current layer. Everything except those
+                # last directions is passed into grad_input.
+                grad_input = grad_output[:-ctx.derv_dims['layer']]
+                # the rest is gradient info for the current layer. The weights are
+                # first, the bias is last.
+                if(ctx.needs_input_grad[1]):
+                    grad_weight = grad_output[-ctx.derv_dims['layer']:-ctx.derv_dims['layer']+ctx.derv_dims['weight'][0]].view(ctx.derv_dims['weight'][1])
+                else:
+                    grad_weight = None
+                if(ctx.needs_input_grad[2]):
+                    grad_bias = grad_output[-ctx.derv_dims['bias'][0]:].view(ctx.derv_dims['bias'][1])
+                else:
+                    grad_bias = None
+            return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
-    def __init__(self, in_channels, out_channels, bias = True, *args, **kwargs):
+    def __init__(self, in_channels, out_channels, bias = True, mode="jacobian", *args, **kwargs):
         super(Linear, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -213,16 +233,23 @@ class Linear(torch.nn.Module):
         self.linear = torch.nn.Linear(in_channels, out_channels, bias)
         self.weight = self.linear.weight
         self.bias = self.linear.bias
+        self.mode = mode
+        if(mode == "jacobian"):
+            self.seedfunc = ForwardUtilities.seed_cartesian
+            self.accmfunc = lambda x: torch.cat(x, dim=1)
+        else:
+            self.seedfunc = ForwardUtilities.seed_randomized
+            self.accmfunc = lambda x: torch.sum(torch.cat(x, dim=1), dim=1)
         self.args = args
         self.kwargs = kwargs
 
     def forward(self, x):
-        return self.__Func__.apply(x, self.weight, self.bias, self.args, self.kwargs)
+        return self.__Func__.apply(x, self.weight, self.bias, self.seedfunc, self.accmfunc, self.mode, self.args, self.kwargs)
 
 class Conv2d(torch.nn.Module):
     class __Func__(torch.autograd.Function):
         @staticmethod
-        def forward(ctx, fwdinput_dual, weight, bias, args, kwargs):
+        def forward(ctx, fwdinput_dual, weight, bias, seedfunc, accmfunc, mode, args, kwargs):
             def reshape_biasd(bias_d, img, weight, stride=1, padding=0, dilation=1,
                                  *args, **kwargs):
                 from math import floor
@@ -232,7 +259,6 @@ class Conv2d(torch.nn.Module):
                 return bias_d.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(n_batch, -1, w, h)
 
             with torch.no_grad():
-                total_dervs = 0
                 if ctx.needs_input_grad[0]:
                     fwdinput = fwdinput_dual.x
                     n_batch = fwdinput.size(0)
@@ -242,38 +268,41 @@ class Conv2d(torch.nn.Module):
                                    torch.nn.functional.conv2d, None,
                                    *args, **kwargs)
                     ret_d_in = truebatch2outer(ret_d_in, n_batch)
-                    total_dervs += fwdinput_dual.size(0)
                 else:
                     fwdinput = fwdinput_dual
                     n_batch = fwdinput.size(0)
                     ret_d_in = None
                 out_channels = weight.size(0)
 
+                ctx.mode = mode
                 ctx.derv_dims = {}
                 ctx.derv_dims['layer'] = 0
                 if ctx.needs_input_grad[1]:
-                    n_dervs_w = weight.numel()
+                    n_dervs_w, weight_d = seedfunc(weight.shape)
+                    ctx.weight_d = weight_d
                     ctx.derv_dims['layer'] += n_dervs_w
                     ctx.derv_dims['weight'] = [n_dervs_w, weight.shape]
-                    weight_d = ForwardUtilities.seed_cartesian(n_dervs_w, weight.shape)
                     ret_d_w = ForwardUtilities.propagate(
                                    fwdinput, None, weight, weight_d, bias, None,
                                    torch.nn.functional.conv2d, None,
                                    *args, **kwargs)
                     ret_d_w = truebatch2outer(ret_d_w, n_batch)
                 if bias is not None and ctx.needs_input_grad[2]:
-                    n_dervs_b = bias.numel()
+                    n_dervs_b, bias_d = seedfunc(bias.shape)
+                    ctx.bias_d = bias_d
                     ctx.derv_dims['layer'] += n_dervs_b
                     ctx.derv_dims['bias'] = [n_dervs_b, bias.shape]
-                    bias_d = ForwardUtilities.seed_cartesian(n_dervs_b, bias.shape)
                     ret_d_b = ForwardUtilities.propagate(
                                    fwdinput, None, weight, None, bias, bias_d,
                                    torch.nn.functional.conv2d, reshape_biasd,
                                    *args, **kwargs)
                     ret_d_b = truebatch2outer(ret_d_b, n_batch)
-                total_dervs += ctx.derv_dims['layer']
 
-                ret_d = torch.cat([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None], dim=1)
+                ret_d = accmfunc([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None])
+                if(mode == "jacobian"):
+                    total_dervs = ret_d.size(1)
+                else:
+                    total_dervs = ret_d.size(1) // bias.size(0)
                 ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
@@ -286,26 +315,37 @@ class Conv2d(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
-            # grad_input is the pass-through of gradient information for layers
-            # that happened before us in the forward pass (and will happen after
-            # this in the reverse pass).
-            # The gradient tensor is organized such that the last directional
-            # derivatives belong to the current layer. Everything except those
-            # last directions is passed into grad_input.
-            grad_input = grad_output[:-ctx.derv_dims['layer']]
-            # the rest is gradient info for the current layer. The weights are
-            # first, the bias is last.
-            if(ctx.needs_input_grad[1]):
-                grad_weight = grad_output[-ctx.derv_dims['layer']:-ctx.derv_dims['layer']+ctx.derv_dims['weight'][0]].view(ctx.derv_dims['weight'][1])
+            if ctx.mode != "jacobian":
+                grad_input = grad_output
+                if(ctx.needs_input_grad[1]):
+                    grad_weight = grad_input * ctx.weight_d
+                else:
+                    grad_weight = None
+                if(ctx.needs_input_grad[2]):
+                    grad_bias = grad_input * ctx.bias_d
+                else:
+                    grad_bias = None
             else:
-                grad_weight = None
-            if(ctx.needs_input_grad[2]):
-                grad_bias = grad_output[-ctx.derv_dims['bias'][0]:].view(ctx.derv_dims['bias'][1])
-            else:
-                grad_bias = None
-            return grad_input, grad_weight, grad_bias, None, None
+                # grad_input is the pass-through of gradient information for layers
+                # that happened before us in the forward pass (and will happen after
+                # this in the reverse pass).
+                # The gradient tensor is organized such that the last directional
+                # derivatives belong to the current layer. Everything except those
+                # last directions is passed into grad_input.
+                grad_input = grad_output[:-ctx.derv_dims['layer']]
+                # the rest is gradient info for the current layer. The weights are
+                # first, the bias is last.
+                if(ctx.needs_input_grad[1]):
+                    grad_weight = grad_output[-ctx.derv_dims['layer']:-ctx.derv_dims['layer']+ctx.derv_dims['weight'][0]].view(ctx.derv_dims['weight'][1])
+                else:
+                    grad_weight = None
+                if(ctx.needs_input_grad[2]):
+                    grad_bias = grad_output[-ctx.derv_dims['bias'][0]:].view(ctx.derv_dims['bias'][1])
+                else:
+                    grad_bias = None
+            return grad_input, grad_weight, grad_bias, None, None, None, None, None
 
-    def __init__(self, in_channels, out_channels, kernel_size, bias = True, *args, **kwargs):
+    def __init__(self, in_channels, out_channels, kernel_size, bias = True, mode="jacobian", *args, **kwargs):
         super(Conv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -314,11 +354,18 @@ class Conv2d(torch.nn.Module):
         self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size, bias)
         self.weight = self.conv.weight
         self.bias = self.conv.bias
+        self.mode = mode
+        if(mode == "jacobian"):
+            self.seedfunc = ForwardUtilities.seed_cartesian
+            self.accmfunc = lambda x: torch.cat(x, dim=1)
+        else:
+            self.seedfunc = ForwardUtilities.seed_randomized
+            self.accmfunc = lambda x: torch.sum(torch.cat(x, dim=1), dim=1)
         self.args = args
         self.kwargs = kwargs
 
     def forward(self, x):
-        return self.__Func__.apply(x, self.weight, self.bias, self.args, self.kwargs)
+        return self.__Func__.apply(x, self.weight, self.bias, self.seedfunc, self.accmfunc, self.mode, self.args, self.kwargs)
 
 class Tanh(torch.nn.Module):
     class __Func__(torch.autograd.Function):
@@ -433,9 +480,7 @@ class Rev2Fwd(torch.nn.Module):
         def backward(ctx, revinput):  # fwdinput
             input_p = revinput.x  # fwdinput
             input_d = revinput.xd  # fwdinput
-            print(f"R2F store input_d({input_d.size()})")
             ctx.save_for_backward(input_d)
-            print(f"F2R forward return input_p({input_p.size()})")
             return input_p
 
         '''
@@ -486,9 +531,7 @@ class Rev2Fwd(torch.nn.Module):
             input_d, = ctx.saved_tensors
             input_d = truebatch2outer(input_d, grad_output.size(0))
             grad_output = grad_output.unsqueeze(1)
-            print(f"mul input_d({input_d.size()}) * grad_output({grad_output.size()})")
             grad_input = (input_d * grad_output).sum(dim=[0, 2, 3, 4])
-            print(f"F2R backward return grad_input({grad_input.size()})")
             return grad_input.flatten()
 
     def __init__(self):
@@ -560,15 +603,14 @@ class ReLU(torch.nn.Module):
 
                 ##############################################
                 # Forward-propagation of incoming derivatives:
-                # $\dot{ret} = 0 if x < 0$
+                # $\dot{ret} = 0 if x <= 0$
                 # $\dot{ret} = 1 if x > 0$
-                # $\dot{ret} = 0 if x = 0$
                 ##############################################
                 if ctx.needs_input_grad[0]:
                     n_batch = fwdinput.size(0)
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
-                    ret_p = ret.unsqueeze(1)
-                    ret_d = torch.where(fwdinput > 0, fwdinput_d, 0.0)
+                    fwdinput_p = fwdinput.unsqueeze(1)
+                    ret_d = torch.where(fwdinput_p > 0, fwdinput_d, 0.0)
                     ret_d = ret_d.view(ret_d.size(0) * ret_d.size(1), *ret_d.shape[2:])
                 else:
                     ret_d = None
@@ -650,75 +692,19 @@ class MaxPool2d(torch.nn.Module):
                                                      kernel_size=kernel_size,
                                                      *args, **kwargs,
                                                      return_indices=True)
-                indices_repeated = indices.repeat(297, 1, 1, 1)
                 ###############################################################
                 # Forward-propagation of incoming derivatives
                 ###############################################################
                 if ctx.needs_input_grad[0]:
                     '''
                     The derivative of the max pooling layer should be 1.0
-                    for the element that got selected (basically it's the 
-                    same as an assignment), and 0.0 everywhere else 
-                    (because those values had no influence, thus the 
-                    derivative wrt. those values is zero)
-
-                    Hence the function that tells you the indices of selected
-                    values is going to give you more or less what you need.
-
-                    Source:
-                    https://pytorch.org/docs/stable/_modules/torch/nn/modules/pooling.html#MaxPool2d
-                    https://discuss.pytorch.org/t/maxpool2d-indexing-order/8281
-                    *** https://discuss.pytorch.org/t/pooling-using-idices-from-another-max-pooling/37209/4
-                    https://discuss.pytorch.org/t/fill-value-to-matrix-based-on-index/34698
-                    
-                    ***I think this is the closest to what Jan wants, but if you notice the shape of data1 and data2
-                    are equal, which is not the case in this situation. I believe this plays into the requirement of 
-                    the gather function needing the input and index to be of the same size.
-                    fwdinput size:   torch.Size([2, 5, 12, 12])
-                    fwdinput_d size: torch.Size([594, 5, 12, 12])
-                    ret size:        torch.Size([2, 5, 6, 6])
-                    indices size:    torch.Size([2, 5, 6, 6])
-                    Size of ret_d:   torch.Size([594, 5, 6, 6])
-                    
-                    Leading dimension is 2 things conflated into one, mini batch and then the number of directional
-                    derivatives so far, the jacobian size. 594 /2 = 297
-                    You can untangle this by calling automad.truebatch2outer() function
-                    You would pass fwdinput_d into automad.truebatch2outer() as first argument, and second argument
-                    would be 2 since that's the mini batch. Nbatch.
-                    The result of this would be a tensor that would be [2, 297, 5, 12, 12] 4D tensor
-                    Now all the dimensions match except there is an additional dimension
-                    Use the indices tell you how to take care of dimension 0, 2, 3, 4
-                    In each of those slices of 297 you want to apply the indices.
-                    
-                    You want the res[:, 0, :, :, :] = input[indices, 0, indices, indices, indices]
-                    You want the res[:, 1, :, :, :] = input[indices, 1, indices, indices, indices]
-                    ...
-                    You want the res[:, 296, :, :, :] = input[indices, 296, indices, indices, indices]
-                    
-                    Unsqueeze indices to have singleton dimension in that place
-                    Maybe have to use expand function, or repeat function
-                    
-                    Make a toy problem, [3,3,3] tensor size, have entries be something from 1-27
-                    So that you can visually see what's going on
-                    Indices array could be 2D thing, select only 1 or 2 from first and 1 or 2 from third, but middle
-                    dimension is wherein the repeated behavior is occurring across all entries.
-                    Unsqueeze result, what does it look like? Or you know use gather and look at the result
-                    Exploratory untangling with toy problem instead of fumbling with autoMAD
+                    for the element that got selected, and 0.0 everywhere else 
                     '''
-
-                    # Retrieve corresponding elements from fwdinput based on ret_d indices
-                    print('###################')
-                    print('Print statements from within MaxPool2D')
-                    print('fwdinput size: ' + str(fwdinput.size()))
-                    print('fwdinput_d size: ' + str(fwdinput_d.size()))
-                    print('ret size: ' + str(ret.size()))
-                    print('indices size: ' + str(indices.size()))
-                    print('indices_repeated size: ' + str(indices_repeated.size()))
-
-                    fwdinput_d_flat = fwdinput_d.flatten(start_dim=0)
-                    ret_d = fwdinput_d_flat.gather(dim=0, index=indices_repeated.flatten(start_dim=0)).view_as(indices_repeated)
-                    print('Size of ret_d:' + str(ret_d.size()))
-                    print('###################')
+                    n_batch = fwdinput.size(0)
+                    n_dervs = fwdinput_d.size(0) // n_batch
+                    fwdinput_d_flat = truebatch2outer(fwdinput_d, n_batch).flatten(start_dim=-2)
+                    index_flat = truebatch2outer(indices,n_batch).flatten(start_dim=-2).repeat(1,n_dervs,1,1)
+                    ret_d = fwdinput_d_flat.gather(dim=-1, index=index_flat).view(n_batch*n_dervs,*ret.shape[1:])
 
                 else:
                     ret_d = None
