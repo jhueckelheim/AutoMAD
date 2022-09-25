@@ -565,10 +565,9 @@ class Dropout(torch.nn.Module):
                 if ctx.needs_input_grad[0]:
                     n_batch = fwdinput.size(0)
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
-                    ret_p = ret.unsqueeze(1)
-                    ret_d = torch.where(ret==fwdinput, 1.0/(1.0-p), 0.0)
+                    ret_d = torch.where(ret!=0, 1.0/(1.0-p), 0.0)
+                    ret_d = ret_d.unsqueeze(1) * fwdinput_d
                     ret_d = ret_d.view(ret_d.size(0) * ret_d.size(1), *ret_d.shape[2:])
-                    ret_d = ret_d * fwdinput_d
                 else:
                     ret_d = None
             ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
@@ -576,7 +575,7 @@ class Dropout(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
-            return grad_output
+            return grad_output, None
 
     def __init__(self):
         super(Dropout, self).__init__()
