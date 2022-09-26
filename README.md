@@ -50,4 +50,4 @@ The AutoMAD layers compute the full Jacobian by creating a cartesian-basis seed 
 ## What works, what doesn't
 Not all layer types are in AutoMAD, the list is still growing. Also, there is not yet a functional `Rev2Fwd` layer.
 
-There is experimental support for a randomized version of the forward mode, which doesn't require computing the full Jacobian and is thus much cheaper. See for example this paper, https://arxiv.org/pdf/2202.08587 for the idea. Unlike previous work that we're ware of, AutoMAD can combine randoized forward mode with conventional back-propagation, which allows computing exact gradients for some layers and approximate gradients for others.
+There is experimental support for a randomized version of the forward mode, which doesn't require computing the full Jacobian and is thus much cheaper. See for example this paper, https://arxiv.org/pdf/2202.08587 for the idea. Unlike previous work that we're ware of, AutoMAD can combine randomized forward mode with conventional back-propagation, which allows computing exact gradients for some layers and approximate gradients for others.
