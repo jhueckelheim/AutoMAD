@@ -67,6 +67,7 @@ class Fwd2Rev(torch.nn.Module):
             grad_output = grad_output.unsqueeze(1)
             product = input_d*grad_output
             grad_input = product.sum(dim=[0]+list(range(2,product.dim())))
+            #print(f"fwd2rev product grad_out {grad_output.size()} input_d {input_d.size()} yields {product.size()}, summed to {grad_input.size()}")
             return grad_input.flatten()
 
     def __init__(self):
@@ -126,7 +127,7 @@ class ForwardUtilities:
     @staticmethod
     def seed_randomized(dims):
         n_dervs = 1
-        seed = torch.rand(dims, requires_grad=False)
+        seed = torch.normal(size=dims, mean=0.0, std=1.0)
         return n_dervs, seed
 
 class Linear(torch.nn.Module):

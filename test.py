@@ -56,11 +56,6 @@ class Net_AutoGrad(torch.nn.Module):
         x = self.linear(x)
         return x
 
-def retrieve_elements_from_indices(tensor, indices):
-    flattened_tensor = tensor.flatten(start_dim=2)
-    output = flattened_tensor.gather(dim=2, index=indices.flatten(start_dim=2)).view_as(indices)
-    return output
-
 n_batches = 2
 nninput = torch.randn(n_batches, 3, 16, 16)
 tgt = torch.randn(n_batches, 7)
@@ -112,6 +107,8 @@ def test_forward_reverse():
     assert torch.all(torch.isclose(netrev.conv1.bias.grad, netfwd.conv1.bias.grad, rtol=rtol, atol=atol))
     assert torch.all(torch.isclose(netrev.conv2.weight.grad, netfwd.conv2.weight.grad, rtol=rtol, atol=atol))
     assert torch.all(torch.isclose(netrev.conv2.bias.grad, netfwd.conv2.bias.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.linear.weight.grad, netfwd.linear.weight.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.linear.bias.grad, netfwd.linear.bias.grad, rtol=rtol, atol=atol))
 
 if __name__ == '__main__':
     test_forward_reverse()
