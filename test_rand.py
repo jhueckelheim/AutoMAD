@@ -8,12 +8,17 @@ class Net_AutoMAD(torch.nn.Module):
         self.conv1 = automad.Conv2d(2, 1, 3, mode=mode)
         self.tanh = automad.Tanh()
         self.linear = automad.Linear(4, 2, mode=mode)
+        self.f2r = automad.Fwd2Rev()
+        self.mse = automad.MSELoss()
 
-    def forward(self, x):
+    def forward(self, x, tgt=None):
         x = self.conv1(x)
         x = self.tanh(x)
         x = automad.flatten(x, 1)
         x = self.linear(x)
+        if tgt != None:
+            x = self.mse(x, tgt)
+        x = self.f2r(x)
         return x
 
 
@@ -56,19 +61,15 @@ def test_forward_reverse():
     print(f"d_linear_weight:\n{netrev.linear.weight.grad}")
     print(f"d_linear_bias:  \n{netrev.linear.bias.grad}")
 
-    n_runs = 1000
+    n_runs = 10000
     gradlinear_b = torch.Tensor(n_runs, *netrev.linear.bias.shape)
     gradlinear_w = torch.Tensor(n_runs, *netrev.linear.weight.shape)
     gradconv1_b = torch.Tensor(n_runs, *netrev.conv1.bias.shape)
     gradconv1_w = torch.Tensor(n_runs, *netrev.conv1.weight.shape)
     for i in range(n_runs):
         netfwd.zero_grad()
-        outfwd = netfwd(nninput)
-        lossfwd = automad.MSELoss(reduction='sum')
-        lfwd = lossfwd(outfwd, tgt)
-        f2r = automad.Fwd2Rev()
-        out_final = f2r(lfwd)
-        out_final.backward()
+        outfwd = netfwd(nninput, tgt)
+        outfwd.backward(torch.ones(1))
         gradlinear_b[i,:] = netfwd.linear.bias.grad.clone()
         gradlinear_w[i,:] = netfwd.linear.weight.grad.clone()
         gradconv1_b[i,:] = netfwd.conv1.bias.grad.clone()

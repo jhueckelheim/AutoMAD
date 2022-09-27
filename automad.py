@@ -397,7 +397,7 @@ class MSELoss(torch.nn.Module):
                 # Primal Evaluation: $ret = tanh(x)$
                 ###############################################################
                 ret = torch.Tensor(1)
-                ret[0] = torch.nn.functional.mse_loss(fwdinput, tgt)
+                ret[0] = torch.nn.functional.mse_loss(fwdinput, tgt, reduction="sum")
 
                 ###############################################################
                 # Forward-propagation of incoming derivatives:
