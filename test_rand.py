@@ -8,14 +8,12 @@ class Net_AutoMAD(torch.nn.Module):
         self.conv1 = automad.Conv2d(2, 1, 3, mode=mode)
         self.tanh = automad.Tanh()
         self.linear = automad.Linear(4, 2, mode=mode)
-        self.f2r = automad.Fwd2Rev()
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.tanh(x)
         x = automad.flatten(x, 1)
         x = self.linear(x)
-        x = self.f2r(x)
         return x
 
 
@@ -66,9 +64,11 @@ def test_forward_reverse():
     for i in range(n_runs):
         netfwd.zero_grad()
         outfwd = netfwd(nninput)
-        lossfwd = torch.nn.MSELoss(reduction='sum')
+        lossfwd = automad.MSELoss(reduction='sum')
         lfwd = lossfwd(outfwd, tgt)
-        lfwd.backward()
+        f2r = automad.Fwd2Rev()
+        out_final = f2r(lfwd)
+        out_final.backward()
         gradlinear_b[i,:] = netfwd.linear.bias.grad.clone()
         gradlinear_w[i,:] = netfwd.linear.weight.grad.clone()
         gradconv1_b[i,:] = netfwd.conv1.bias.grad.clone()

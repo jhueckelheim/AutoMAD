@@ -62,12 +62,15 @@ class Fwd2Rev(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
+            #print("fwd2rev grad_out", grad_output)
             input_d, = ctx.saved_tensors
             input_d = truebatch2outer(input_d, grad_output.size(0))
             grad_output = grad_output.unsqueeze(1)
             product = input_d*grad_output
             grad_input = product.sum(dim=[0]+list(range(2,product.dim())))
-            #print(f"fwd2rev product grad_out {grad_output.size()} input_d {input_d.size()} yields {product.size()}, summed to {grad_input.size()}")
+            #print(input_d.transpose(0,1).size(), grad_output.size())
+            #grad_input = torch.matmul(input_d, grad_output.transpose(0,1))
+            #print(f"fwd2rev product grad_out {grad_output} input_d {input_d} yields {grad_input}")
             return grad_input.flatten()
 
     def __init__(self):
@@ -178,11 +181,14 @@ class Linear(torch.nn.Module):
                                    *args, **kwargs)
                     ret_d_b = truebatch2outer(ret_d_b, n_batch)
 
-                ret_d = accmfunc([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None])
+                if bias is not None and ctx.needs_input_grad[2]:
+                    ret_d = accmfunc([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None])
+                else:
+                    ret_d = accmfunc([i for i in [ret_d_in, ret_d_w] if i != None])
                 if(mode == "jacobian"):
                     total_dervs = ret_d.size(1)
                 else:
-                    total_dervs = ret_d.size(1) // bias.size(0)
+                    total_dervs = ret_d.size(1) // weight.size(0)
                 ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
@@ -367,6 +373,58 @@ class Conv2d(torch.nn.Module):
 
     def forward(self, x):
         return self.__Func__.apply(x, self.weight, self.bias, self.seedfunc, self.accmfunc, self.mode, self.args, self.kwargs)
+	
+class MSELoss(torch.nn.Module):
+    class __Func__(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, fwdinput_dual, tgt):
+            with torch.no_grad():
+                if ctx.needs_input_grad[0]:
+                    # In this case, the incoming tensor is already a DualTensor,
+                    # which means we are probably not the first layer in this
+                    # network. We extract the primal and derivative inputs.
+                    fwdinput = fwdinput_dual.x
+                    fwdinput_d = fwdinput_dual.xd
+                    n_dervs_incoming = fwdinput_dual.size(0)
+                else:
+                    # In this case, the incoming tensor is just a plain tensor,
+                    # so we are probably the first (differentiated) layer. There
+                    # is no incoming derivative for us to forward-propagate.
+                    fwdinput = fwdinput_dual
+                    n_dervs_incoming = 0
+
+                ###############################################################
+                # Primal Evaluation: $ret = tanh(x)$
+                ###############################################################
+                ret = torch.Tensor(1)
+                ret[0] = torch.nn.functional.mse_loss(fwdinput, tgt)
+
+                ###############################################################
+                # Forward-propagation of incoming derivatives:
+                # $\dot{ret} = 2*(x-tgt) * \dot{x}$
+                ###############################################################
+                if ctx.needs_input_grad[0]:
+                    n_batch = fwdinput.size(0)
+                    fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
+                    tgt_p = tgt.unsqueeze(1)
+                    fwdinput_p = fwdinput.unsqueeze(1)
+                    ret_d = ((fwdinput_p - tgt_p)*2.0)*fwdinput_d
+                    ret_d = torch.sum(ret_d, dim=[0,2])
+                else:
+                    ret_d = None
+
+            ret_dual = DualTensor(torch.zeros(n_dervs_incoming), ret, ret_d)
+            return ret_dual
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output, None
+
+    def __init__(self):
+        super(MSELoss, self).__init__()
+
+    def forward(self, x, tgt):
+        return self.__Func__.apply(x, tgt)
 
 class Tanh(torch.nn.Module):
     class __Func__(torch.autograd.Function):

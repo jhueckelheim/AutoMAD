@@ -14,9 +14,10 @@ class Net_AutoMAD(torch.nn.Module):
         self.max = automad.MaxPool2d(2)
         self.linear = automad.Linear(5*3*3, 7, mode=mode)
         self.f2r = automad.Fwd2Rev()
+        self.mse = automad.MSELoss()
 
 
-    def forward(self, x):
+    def forward(self, x, tgt=None):
         x = self.conv1(x)
         x = self.tanh(x)
         x = self.conv2(x)
@@ -27,6 +28,8 @@ class Net_AutoMAD(torch.nn.Module):
         x = self.max(x)
         x = automad.flatten(x, 1)
         x = self.linear(x)
+        if tgt != None:
+            x = self.mse(x, tgt)
         x = self.f2r(x)
         return x
 
@@ -57,7 +60,7 @@ class Net_AutoGrad(torch.nn.Module):
         return x
 
 n_batches = 2
-nninput = torch.randn(n_batches, 3, 16, 16)
+nninput = torch.randn(n_batches, 3, 16, 16, requires_grad = False)
 tgt = torch.randn(n_batches, 7)
 #tgt = torch.randn(n_batches, 5, 6, 6)
 
@@ -74,33 +77,25 @@ def test_forward_reverse():
     netfwd.linear.weight = torch.nn.Parameter(netrev.linear.weight)
     netfwd.linear.bias = torch.nn.Parameter(netrev.linear.bias)
     netrev.zero_grad()
-    netfwd.zero_grad()
 
     outrev = netrev(nninput)
     lossrev = torch.nn.MSELoss(reduction='sum')
     lrev = lossrev(outrev, tgt)
     lrev.backward()
+    print("""
+    REVERSE AD
+            """)
+    print(f"d_conv1_bias:\n{netrev.conv1.bias.grad}")
+
+    netfwd.zero_grad()
     outfwd = netfwd(nninput)
     lossfwd = torch.nn.MSELoss(reduction='sum')
     lfwd = lossfwd(outfwd, tgt)
     lfwd.backward()
-
-    print("""
-    REVERSE AD
-            """)
-    print(f"d_conv1_weight:\n{netrev.conv1.weight.grad}")
-    print(f"d_conv1_bias:\n{netrev.conv1.bias.grad}")
-    #print(f"d_conv2_weight:\n{netrev.conv2.weight.grad}")
-    #print(f"d_conv2_bias:\n{netrev.conv2.bias.grad}")
     print("""
     MIXED MODE AD
             """)
-    print(f"d_conv1_weight:\n{netfwd.conv1.weight.grad}")
     print(f"d_conv1_bias:\n{netfwd.conv1.bias.grad}")
-    print(f"diff:\n{netfwd.conv1.weight.grad-netrev.conv1.weight.grad}")
-    print(f"isclose:\n{torch.all(torch.isclose(netfwd.conv1.weight.grad, netrev.conv1.weight.grad, rtol=1e-05, atol=1e-06))}")
-    #print(f"d_conv2_weight:\n{netfwd.conv2.weight.grad}")
-    #print(f"d_conv2_bias:\n{netfwd.conv2.bias.grad}")
     rtol = 1e-4
     atol = 1e-5
     assert torch.all(torch.isclose(netrev.conv1.weight.grad, netfwd.conv1.weight.grad, rtol=rtol, atol=atol))
@@ -109,6 +104,21 @@ def test_forward_reverse():
     assert torch.all(torch.isclose(netrev.conv2.bias.grad, netfwd.conv2.bias.grad, rtol=rtol, atol=atol))
     assert torch.all(torch.isclose(netrev.linear.weight.grad, netfwd.linear.weight.grad, rtol=rtol, atol=atol))
     assert torch.all(torch.isclose(netrev.linear.bias.grad, netfwd.linear.bias.grad, rtol=rtol, atol=atol))
+
+    netfwd.zero_grad()
+    lfwd = netfwd(nninput, tgt)
+    lfwd.backward(torch.ones(1))
+    print("""
+    FORWARD MODE AD
+            """)
+    print(f"d_conv1_bias:\n{netfwd.conv1.bias.grad}")
+    assert torch.all(torch.isclose(netrev.conv1.weight.grad, netfwd.conv1.weight.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.conv1.bias.grad, netfwd.conv1.bias.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.conv2.weight.grad, netfwd.conv2.weight.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.conv2.bias.grad, netfwd.conv2.bias.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.linear.weight.grad, netfwd.linear.weight.grad, rtol=rtol, atol=atol))
+    assert torch.all(torch.isclose(netrev.linear.bias.grad, netfwd.linear.bias.grad, rtol=rtol, atol=atol))
+
 
 if __name__ == '__main__':
     test_forward_reverse()
