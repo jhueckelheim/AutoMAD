@@ -62,15 +62,12 @@ class Fwd2Rev(torch.nn.Module):
 
         @staticmethod
         def backward(ctx, grad_output):
-            #print("fwd2rev grad_out", grad_output)
             input_d, = ctx.saved_tensors
             input_d = truebatch2outer(input_d, grad_output.size(0))
             grad_output = grad_output.unsqueeze(1)
             product = input_d*grad_output
             grad_input = product.sum(dim=[0]+list(range(2,product.dim())))
-            #print(input_d.transpose(0,1).size(), grad_output.size())
             #grad_input = torch.matmul(input_d, grad_output.transpose(0,1))
-            #print(f"fwd2rev product grad_out {grad_output} input_d {input_d} yields {grad_input}")
             return grad_input.flatten()
 
     def __init__(self):
@@ -131,6 +128,9 @@ class ForwardUtilities:
     def seed_randomized(dims):
         n_dervs = 1
         seed = torch.normal(size=dims, mean=0.0, std=1.0)
+        #seed = torch.zeros(size=dims)
+        #seed.flatten()[0] = 1
+        #print("seed_randomized ", seed)
         return n_dervs, seed
 
 class Linear(torch.nn.Module):
@@ -187,9 +187,9 @@ class Linear(torch.nn.Module):
                     ret_d = accmfunc([i for i in [ret_d_in, ret_d_w] if i != None])
                 if(mode == "jacobian"):
                     total_dervs = ret_d.size(1)
+                    ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
                 else:
                     total_dervs = ret_d.size(1) // weight.size(0)
-                ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
                 # Primal Evaluation: $w*x+b$
@@ -308,9 +308,9 @@ class Conv2d(torch.nn.Module):
                 ret_d = accmfunc([i for i in [ret_d_in, ret_d_w, ret_d_b] if i != None])
                 if(mode == "jacobian"):
                     total_dervs = ret_d.size(1)
+                    ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
                 else:
                     total_dervs = ret_d.size(1) // bias.size(0)
-                ret_d = ret_d.view(ret_d.size(0)*ret_d.size(1), *ret_d.shape[2:])
 
                 ###############################################################
                 # Primal Evaluation: $w*x+b$
@@ -394,7 +394,7 @@ class MSELoss(torch.nn.Module):
                     n_dervs_incoming = 0
 
                 ###############################################################
-                # Primal Evaluation: $ret = tanh(x)$
+                # Primal Evaluation: $ret = sum((x_i-tgt_i)^2)$
                 ###############################################################
                 ret = torch.Tensor(1)
                 ret[0] = torch.nn.functional.mse_loss(fwdinput, tgt, reduction="sum")
@@ -408,8 +408,15 @@ class MSELoss(torch.nn.Module):
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
                     tgt_p = tgt.unsqueeze(1)
                     fwdinput_p = fwdinput.unsqueeze(1)
-                    ret_d = ((fwdinput_p - tgt_p)*2.0)*fwdinput_d
-                    ret_d = torch.sum(ret_d, dim=[0,2])
+                    ret_d = torch.zeros(fwdinput_d.size(1))
+                    for i in range(fwdinput_d.size(1)):
+                        ret_d[i] = torch.sum(fwdinput_d[:,i,:].flatten()*((fwdinput_p - tgt_p).flatten())*2.0)
+                    diff = (fwdinput_p - tgt_p).expand(fwdinput_d.size())
+                    ret_d2 = torch.sum(fwdinput_d*diff*2.0, dim=[0,2])
+                    #print("ret_d:", ret_d)
+                    #print("ret_d2:", ret_d2)
+                    #ret_d = fwdinput_d.flatten()*((fwdinput_p - tgt_p).expand(fwdinput_d.size()).flatten())*2.0
+                    #ret_d = torch.sum(ret_d).flatten()
                 else:
                     ret_d = None
 
@@ -636,10 +643,13 @@ class Dropout(torch.nn.Module):
         def backward(ctx, grad_output):
             return grad_output, None
 
-    def __init__(self):
+    def __init__(self, p=0.5):
         super(Dropout, self).__init__()
+        self.p = p
 
-    def forward(self, x, p=0.5):
+    def forward(self, x, p=None):
+        if(p==None):
+            p = self.p
         return self.__Func__.apply(x, p)
 
 class ReLU(torch.nn.Module):
