@@ -408,11 +408,11 @@ class MSELoss(torch.nn.Module):
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
                     tgt_p = tgt.unsqueeze(1)
                     fwdinput_p = fwdinput.unsqueeze(1)
-                    ret_d = torch.zeros(fwdinput_d.size(1))
-                    for i in range(fwdinput_d.size(1)):
-                        ret_d[i] = torch.sum(fwdinput_d[:,i,:].flatten()*((fwdinput_p - tgt_p).flatten())*2.0)
+                    #ret_d = torch.zeros(fwdinput_d.size(1))
+                    #for i in range(fwdinput_d.size(1)):
+                    #    ret_d[i] = torch.sum(fwdinput_d[:,i,:].flatten()*((fwdinput_p - tgt_p).flatten())*2.0)
                     diff = (fwdinput_p - tgt_p).expand(fwdinput_d.size())
-                    ret_d2 = torch.sum(fwdinput_d*diff*2.0, dim=[0,2])
+                    ret_d = torch.sum(fwdinput_d*diff*2.0, dim=[0,2])
                     #print("ret_d:", ret_d)
                     #print("ret_d2:", ret_d2)
                     #ret_d = fwdinput_d.flatten()*((fwdinput_p - tgt_p).expand(fwdinput_d.size()).flatten())*2.0

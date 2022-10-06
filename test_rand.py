@@ -1,19 +1,36 @@
 import automad
 import torch
 import numpy as np
+import sys
+
+n_batches = 1
+n_chann = 2
+n_out = 2
+img_size = 20
+lin_in_size = n_chann*((img_size-4)**2)//(2*2*2*2)
 
 class Net_AutoMAD(torch.nn.Module):
     def __init__(self, mode="jacobian"):
         super(Net_AutoMAD, self).__init__()
-        self.conv1 = automad.Conv2d(2, 1, 3, mode=mode)
+        self.conv1 = automad.Conv2d(n_chann, n_chann, 3, mode=mode)
         self.tanh = automad.Tanh()
-        self.linear = automad.Linear(4, 2, mode=mode)
-        self.f2r = automad.Fwd2Rev()
+        self.conv2 = automad.Conv2d(n_chann, n_chann, 3, mode=mode)
+        self.dropout = automad.Dropout()
+        self.relu = automad.ReLU()
+        self.avg = automad.AvgPool2d(2)
+        self.max = automad.MaxPool2d(2)
+        self.linear = automad.Linear(lin_in_size, n_out, mode=mode)
         self.mse = automad.MSELoss()
+        self.f2r = automad.Fwd2Rev()
 
     def forward(self, x, tgt=None):
         x = self.conv1(x)
         x = self.tanh(x)
+        x = self.conv2(x)
+        x = self.dropout(x)
+        x = self.relu(x)
+        x = self.avg(x)
+        x = self.max(x)
         x = automad.flatten(x, 1)
         x = self.linear(x)
         if tgt != None:
@@ -25,22 +42,31 @@ class Net_AutoMAD(torch.nn.Module):
 class Net_AutoGrad(torch.nn.Module):
     def __init__(self):
         super(Net_AutoGrad, self).__init__()
-        self.conv1 = torch.nn.Conv2d(2, 1, 3)
+        self.conv1 = torch.nn.Conv2d(n_chann, n_chann, 3)
         self.tanh = torch.nn.Tanh()
-        self.linear = torch.nn.Linear(4, 2)
+        self.conv2 = torch.nn.Conv2d(n_chann, n_chann, 3)
+        self.dropout = torch.nn.Dropout()
+        self.relu = torch.nn.ReLU()
+        self.avg = torch.nn.AvgPool2d(2)
+        self.max = torch.nn.MaxPool2d(2)
+        self.linear = torch.nn.Linear(lin_in_size, n_out)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.tanh(x)
+        x = self.conv2(x)
+        x = self.dropout(x)
+        x = self.relu(x)
+        x = self.avg(x)
+        x = self.max(x)
         x = torch.flatten(x, 1)
         x = self.linear(x)
         return x
 
-n_batches = 1
-nninput = torch.randn(n_batches, 2, 4, 4)
-tgt = torch.randn(n_batches, 2)
+nninput = torch.rand(n_batches, n_chann, img_size, img_size)
+tgt = torch.rand(n_batches, n_out)
 
-def test_forward_reverse():
+def test_forward_reverse(n_runs):
     netrev = Net_AutoGrad()
     netrev.zero_grad()
     netfwd = Net_AutoMAD(mode="nonjacobian")
@@ -53,50 +79,34 @@ def test_forward_reverse():
     lossrev = torch.nn.MSELoss(reduction='sum')
     lrev = lossrev(outrev, tgt)
     lrev.backward()
-    print("""
-    REVERSE AD
-            """)
-    print(f"d_conv1_weight: \n{netrev.conv1.weight.grad}")
-    print(f"d_conv1_bias:   \n{netrev.conv1.bias.grad}")
-    print(f"d_linear_weight:\n{netrev.linear.weight.grad}")
-    print(f"d_linear_bias:  \n{netrev.linear.bias.grad}")
+    all_rev = torch.cat([param.grad.flatten().clone() for param in netrev.parameters() if param.grad != None])
 
-    n_runs = 10000
-    gradlinear_b = torch.Tensor(n_runs, *netrev.linear.bias.shape)
-    gradlinear_w = torch.Tensor(n_runs, *netrev.linear.weight.shape)
-    gradconv1_b = torch.Tensor(n_runs, *netrev.conv1.bias.shape)
-    gradconv1_w = torch.Tensor(n_runs, *netrev.conv1.weight.shape)
+    all_fwd = None
     for i in range(n_runs):
         netfwd.zero_grad()
         outfwd = netfwd(nninput, tgt)
         outfwd.backward(torch.ones(1))
-        gradlinear_b[i,:] = netfwd.linear.bias.grad.clone()
-        gradlinear_w[i,:] = netfwd.linear.weight.grad.clone()
-        gradconv1_b[i,:] = netfwd.conv1.bias.grad.clone()
-        gradconv1_w[i,:] = netfwd.conv1.weight.grad.clone()
-    gradconv1_w_m = torch.mean(gradconv1_w, dim=0)
-    gradconv1_b_m = torch.mean(gradconv1_b, dim=0)
-    gradlinear_w_m = torch.mean(gradlinear_w, dim=0)
-    gradlinear_b_m = torch.mean(gradlinear_b, dim=0)
-    print("""
-    MIXED MODE AD
-            """)
-    print(f"d_conv1_weight:\n{gradconv1_w_m}")
-    print(f"d_conv1_bias:  \n{gradconv1_b_m}")
-    print(f"d_linear_weight:\n{gradlinear_w_m}")
-    print(f"d_linear_bias:  \n{gradlinear_b_m}")
+        if(all_fwd == None):
+            n_grads = 0
+            for param in netfwd.parameters():
+                if(param.grad != None):
+                    n_grads += param.grad.numel()
+            all_fwd = torch.zeros(n_runs, n_grads)
+        all_fwd[i,:] = torch.cat([param.grad.flatten().clone() for param in netfwd.parameters() if param.grad != None])
+    all_fwd = torch.mean(all_fwd, dim=0)
     rtol = 1e-0
     atol = 1e-0
 
-    all_rev = torch.cat((netrev.conv1.weight.grad.flatten(), netrev.conv1.bias.grad, netrev.linear.weight.grad.flatten(), netrev.linear.bias.grad))
-    all_fwd = torch.cat((gradconv1_w_m.flatten(), gradconv1_b_m, gradlinear_w_m.flatten(), gradlinear_b_m))
     all_rev_n = all_rev/torch.norm(all_rev)
     all_fwd_n = all_fwd/torch.norm(all_fwd)
 
     angle = torch.arccos(torch.clip(torch.dot(all_rev_n, all_fwd_n), -1.0, 1.0))
-    print(angle)
-    assert angle < 0.3
+    angle = angle*180/torch.pi
+    print("Angle between true and approximate gradient after %d runs with %d params: %f degrees"%(n_runs,all_rev.size(0),angle))
+    #assert angle < 30
 
 if __name__ == '__main__':
-    test_forward_reverse()
-    print('Check for equivalency of weights and biases between forward and reverse mode AD')
+    n_runs = 1000
+    if(len(sys.argv) > 1):
+        n_runs = int(sys.argv[1])
+    test_forward_reverse(n_runs)
