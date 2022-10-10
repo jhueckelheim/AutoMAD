@@ -102,7 +102,6 @@ class ForwardUtilities:
             # which means we are probably not the first layer in this
             # network. We extract the primal and derivative inputs.
             ret_d1 = func(img_d, weight, None, *args, **kwargs)
-            ret_d1 = func(img_d, weight, None, *args, **kwargs)
     
         ###############################################################
         # Assembly of derivative tensor
