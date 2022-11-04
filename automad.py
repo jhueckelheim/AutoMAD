@@ -127,9 +127,6 @@ class ForwardUtilities:
     def seed_randomized(dims):
         n_dervs = 1
         seed = torch.normal(size=dims, mean=0.0, std=1.0)
-        #seed = torch.zeros(size=dims)
-        #seed.flatten()[0] = 1
-        #print("seed_randomized ", seed)
         return n_dervs, seed
 
 class Linear(torch.nn.Module):
@@ -414,15 +411,8 @@ class MSELoss(torch.nn.Module):
                     fwdinput_d = truebatch2outer(fwdinput_d, n_batch)
                     tgt_p = tgt.unsqueeze(1)
                     fwdinput_p = fwdinput.unsqueeze(1)
-                    #ret_d = torch.zeros(fwdinput_d.size(1))
-                    #for i in range(fwdinput_d.size(1)):
-                    #    ret_d[i] = torch.sum(fwdinput_d[:,i,:].flatten()*((fwdinput_p - tgt_p).flatten())*2.0)
                     diff = (fwdinput_p - tgt_p).expand(fwdinput_d.size())
                     ret_d = torch.sum(fwdinput_d*diff*2.0, dim=[0,2])
-                    #print("ret_d:", ret_d)
-                    #print("ret_d2:", ret_d2)
-                    #ret_d = fwdinput_d.flatten()*((fwdinput_p - tgt_p).expand(fwdinput_d.size()).flatten())*2.0
-                    #ret_d = torch.sum(ret_d).flatten()
                 else:
                     ret_d = None
 
@@ -553,12 +543,10 @@ class Rev2Fwd(torch.nn.Module):
             ctx.dims = dims
             n_dervs, seed = ForwardUtilities.seed_cartesian(dims)
             input_dual = DualTensor(torch.zeros(n_dervs), fwdinput, seed)
-            print("R2F forward ret ", input_dual.size())
             return input_dual
 
         @staticmethod
         def backward(ctx, grad_output):
-            print("R2F backward in ", grad_output.size())
             return grad_output.view(ctx.dims)
 
     def __init__(self):

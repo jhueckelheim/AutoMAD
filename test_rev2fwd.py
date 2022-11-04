@@ -74,7 +74,6 @@ def test_forward_reverse():
     lossrev = torch.nn.MSELoss(reduction='sum')
     lrev = lossrev(outrev, tgt)
     lrev.backward()
-    #all_rev = torch.cat([param.grad.flatten().clone() for param in netrev.parameters() if param.grad != None])
     all_rev = [param.grad.flatten().clone() for param in netrev.parameters() if param.grad != None]
     print("rev:", all_rev)
 
@@ -84,25 +83,8 @@ def test_forward_reverse():
     netfwd.zero_grad()
     outfwd = netfwd(nninput, tgt)
     outfwd.backward()
-    #all_fwd = torch.cat([param.grad.flatten().clone() for param in netfwd.parameters() if param.grad != None])
     all_fwd = [param.grad.flatten().clone() for param in netfwd.parameters() if param.grad != None]
     print("fwd:", all_fwd)
-
-
-    #all_rev_n = all_rev/torch.norm(all_rev)
-    #all_fwd_n = all_fwd/torch.norm(all_fwd)
-
-    #
-
-    #angle1 = torch.arccos(torch.clip(torch.dot(all_rev_n, all_fwd_n), -1.0, 1.0))
-    #angle1 = angle1*180/torch.pi
-
-    #print("REV:")
-    #print(all_rev)
-    #print("FWD:")
-    #print(all_fwd)
-
-    #print(f"Angle with {all_rev.size(0)} params: fwd_grad {angle1}")
 
 if __name__ == '__main__':
     test_forward_reverse()
